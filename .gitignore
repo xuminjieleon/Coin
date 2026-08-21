@@ -1,0 +1,16 @@
+# Python
+backend/.venv/
+__pycache__/
+*.pyc
+
+# Node
+frontend/node_modules/
+frontend/dist/
+frontend/tsconfig.tsbuildinfo
+
+# 回测缓存（按引擎源码哈希自动重建）
+backend/tests/_bt_cache.pkl
+
+# 本地环境
+*.log.tmp
+.DS_Store

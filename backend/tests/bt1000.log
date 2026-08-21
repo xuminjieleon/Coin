@@ -1,0 +1,174 @@
+[setup] symbols=['BTCUSDT', 'ETHUSDT', 'SOLUSDT'] points/symbol=1000 split=60/40 by time
+[data] BTCUSDT: 17000 bars
+[data] ETHUSDT: 17000 bars
+[data] SOLUSDT: 17000 bars
+[calc] BTCUSDT: 100/1000 (3s elapsed)
+[calc] BTCUSDT: 200/1000 (7s elapsed)
+[calc] BTCUSDT: 300/1000 (11s elapsed)
+[calc] BTCUSDT: 400/1000 (15s elapsed)
+[calc] BTCUSDT: 500/1000 (21s elapsed)
+[calc] BTCUSDT: 600/1000 (39s elapsed)
+[calc] BTCUSDT: 700/1000 (55s elapsed)
+[calc] BTCUSDT: 800/1000 (71s elapsed)
+[calc] BTCUSDT: 900/1000 (87s elapsed)
+[calc] BTCUSDT: 1000/1000 (103s elapsed)
+[data] BTCUSDT: 17000 bars, 1000 points
+[calc] ETHUSDT: 100/1000 (11s elapsed)
+[calc] ETHUSDT: 200/1000 (18s elapsed)
+[calc] ETHUSDT: 300/1000 (23s elapsed)
+[calc] ETHUSDT: 400/1000 (28s elapsed)
+[calc] ETHUSDT: 500/1000 (34s elapsed)
+[calc] ETHUSDT: 600/1000 (39s elapsed)
+[calc] ETHUSDT: 700/1000 (45s elapsed)
+[calc] ETHUSDT: 800/1000 (50s elapsed)
+[calc] ETHUSDT: 900/1000 (55s elapsed)
+[calc] ETHUSDT: 1000/1000 (60s elapsed)
+[data] ETHUSDT: 17000 bars, 1000 points
+[calc] SOLUSDT: 100/1000 (4s elapsed)
+[calc] SOLUSDT: 200/1000 (8s elapsed)
+[calc] SOLUSDT: 300/1000 (14s elapsed)
+[calc] SOLUSDT: 400/1000 (25s elapsed)
+[calc] SOLUSDT: 500/1000 (41s elapsed)
+[calc] SOLUSDT: 600/1000 (57s elapsed)
+[calc] SOLUSDT: 700/1000 (72s elapsed)
+[calc] SOLUSDT: 800/1000 (89s elapsed)
+[calc] SOLUSDT: 900/1000 (104s elapsed)
+[calc] SOLUSDT: 1000/1000 (120s elapsed)
+[data] SOLUSDT: 17000 bars, 1000 points
+[cache] saved 3000 records
+[split] total=3000  IS=1800 (2024-10-02 21:00..2025-11-01 02:00)  OOS=1200 (2025-11-01 17:00..2026-07-22 08:00)
+
+===== IS 诊断：条件命中率（1D/1W 方向）=====
+  CVD背离与评分同向         n=174  1D=50.0%  1W=52.9%
+  CVD背离与评分反向         n=107  1D=45.8%  1W=47.7%
+  MTF aligned        n=915  1D=48.1%  1W=50.9%
+  MTF conflict       n=222  1D=51.8%  1W=53.6%
+  trending           n=839  1D=47.2%  1W=50.8%
+  ranging            n=419  1D=52.7%  1W=52.6%
+  4h CVD背离存在         n=395  1D=50.1%  1W=51.8%
+  1d CVD背离存在         n=389  1D=46.5%  1W=48.8%
+  过热(ext>2.5)        n=52   1D=67.3%  1W=57.7%
+  超卖(ext<-2.5)       n=43   1D=32.6%  1W=62.8%
+  溢价区(pct>0.8)       n=512  1D=52.1%  1W=52.7%
+  折价区(pct<0.2)       n=489  1D=43.6%  1W=48.4%
+  -- 独立信号方向命中率（信号方向 vs 后续收益方向）--
+  1h CVD背离方向         1D: n=506  胜率=52.4%
+  1h CVD背离方向         1W: n=505  胜率=53.1%
+
+  4h CVD背离方向         1D: n=579  胜率=49.9%
+  4h CVD背离方向         1W: n=580  胜率=52.6%
+
+  1d CVD背离方向         1D: n=570  胜率=43.3%
+  1d CVD背离方向         1W: n=570  胜率=46.0%
+
+  ext 反转(ext>|2.5|)  1D: n=120  胜率=50.0%
+  ext 反转(ext>|2.5|)  1W: n=120  胜率=38.3%
+
+  pd 边缘反转            1D: n=1465 胜率=51.8%
+  pd 边缘反转            1W: n=1465 胜率=50.3%
+
+  -- 按强组件同向数 --
+  agree 0-1: n=1    1D=0.0%  1W=0.0%
+  agree 2-3: n=627  1D=49.9%  1W=54.4%
+  agree 4-5: n=630  1D=48.3%  1W=48.5%
+  agree 6-99: n=0    1D=0.0%  1W=0.0%
+
+===== IS 附加诊断 =====
+  横截面动量(30d排名) 1D: n=1171 胜率=50.1%
+  横截面动量(30d排名) 1W: n=1172 胜率=50.9%
+  保本管理计划[all] T=1.0x: fill=761 win=28.8% scratch=53.5% 非亏损=82.3%
+  保本管理计划[aligned25] T=1.0x: fill=539 win=28.9% scratch=53.1% 非亏损=82.0%
+
+===== IS 方向门控扫描 =====
+  base      th=15  1D: n=1258 49.0%   1W: n=1259 51.4%
+  base      th=25  1D: n=878  49.2%   1W: n=878  48.9%
+  base      th=40  1D: n=466  49.6%   1W: n=466  49.6%
+  mtf       th=15  1D: n=943  50.2%   1W: n=944  49.2%
+  mtf       th=25  1D: n=474  48.5%   1W: n=474  48.3%
+  mtf       th=40  1D: n=98   48.0%   1W: n=98   46.9%
+  d1        th=15  1D: n=1148 50.2%   1W: n=1148 44.9%
+  d1        th=25  1D: n=902  50.1%   1W: n=902  46.7%
+  d1        th=40  1D: n=146  40.4%   1W: n=147  38.8%
+  cvdconf   th=15  1D: n=398  46.5%   1W: n=398  52.0%
+  cvdconf   th=25  1D: n=398  46.5%   1W: n=398  52.0%
+  cvdconf   th=40  1D: n=398  46.5%   1W: n=398  52.0%
+  cvdconf3  th=15  1D: n=67   47.8%   1W: n=67   55.2%
+  cvdconf3  th=25  1D: n=67   47.8%   1W: n=67   55.2%
+  cvdconf3  th=40  1D: n=67   47.8%   1W: n=67   55.2%
+
+===== IS 交易计划门控扫描（1:1 目标，限价成交后）=====
+  all          T=1.0x: n=878  fill=761  win=52.3%
+  all          T=1.5x: n=878  fill=761  win=42.7%
+  all          T=2.5x: n=878  fill=761  win=29.8%
+  conf2        T=1.0x: n=177  fill=153  win=53.6%
+  conf2        T=1.5x: n=177  fill=153  win=43.8%
+  conf2        T=2.5x: n=177  fill=153  win=28.1%
+  conf2s40     T=1.0x: n=63   fill=55   win=47.3%
+  conf2s40     T=1.5x: n=63   fill=55   win=40.0%
+  conf2s40     T=2.5x: n=63   fill=55   win=27.3%
+  conf3        T=1.0x: n=34   fill=28   win=53.6%
+  conf3        T=1.5x: n=34   fill=28   win=46.4%
+  conf3        T=2.5x: n=34   fill=28   win=28.6%
+  aligned25    T=1.0x: n=621  fill=539  win=52.3%
+  aligned25    T=1.5x: n=621  fill=539  win=42.5%
+  aligned25    T=2.5x: n=621  fill=539  win=29.9%
+  cvd25        T=1.0x: n=194  fill=166  win=53.6%
+  cvd25        T=1.5x: n=194  fill=166  win=44.0%
+  cvd25        T=2.5x: n=194  fill=166  win=28.9%
+  conf2_range  T=1.0x: n=54   fill=49   win=55.1%
+  conf2_range  T=1.5x: n=54   fill=49   win=44.9%
+  conf2_range  T=2.5x: n=54   fill=49   win=24.5%
+  conf2_agree  T=1.0x: n=100  fill=89   win=50.6%
+  conf2_agree  T=1.5x: n=100  fill=89   win=42.7%
+  conf2_agree  T=2.5x: n=100  fill=89   win=28.1%
+
+[选定方向门控] cvdconf3|th15 (IS 1W)
+[选定计划门控] conf2_range @T=1.0x (IS)
+
+===== OOS 验证 =====
+  方向 4H: n=45 胜率=48.9% 多头均=-0.05% 空头均=-0.06%
+  方向 1D: n=45 胜率=57.8% 多头均=-0.74% 空头均=-0.30%
+  方向 1W: n=45 胜率=62.2% 多头均=-10.20% 空头均=-3.07%
+  方向 1M: n=45 胜率=44.4% 多头均=-7.15% 空头均=-5.96%
+  屏障(0.5×ATR 先触) 1D: n=45 先触胜率=51.1%
+  屏障(0.5×ATR 先触) 1W: n=45 先触胜率=51.1%
+  BTCUSDT 1W: n=15 胜率=66.7%
+  ETHUSDT 1W: n=19 胜率=84.2%
+  SOLUSDT 1W: n=11 胜率=18.2%
+  计划[conf2_range] T=1.0x: n=49 fill=42 win=64.3%
+  计划[conf2_range] T=1.5x: n=49 fill=42 win=52.4%
+  计划[conf2_range] T=2.5x: n=49 fill=42 win=40.5%
+  BTCUSDT 计划 T=1.0x: fill=18 win=72.2%
+  ETHUSDT 计划 T=1.0x: fill=12 win=50.0%
+  SOLUSDT 计划 T=1.0x: fill=12 win=66.7%
+  -- 保本管理计划（+0.5R 后止损移至入场）--
+  OOS 计划[all] T=1.0x BE管理: fill=529 win=33.1% 保本=49.1% 非亏损=82.2%
+    BTCUSDT: fill=182 非亏损=79.7%
+    ETHUSDT: fill=183 非亏损=85.2%
+    SOLUSDT: fill=164 非亏损=81.7%
+  OOS 计划[aligned25] T=1.0x BE管理: fill=409 win=34.7% 保本=48.4% 非亏损=83.1%
+    BTCUSDT: fill=149 非亏损=77.9%
+    ETHUSDT: fill=143 非亏损=88.8%
+    SOLUSDT: fill=117 非亏损=82.9%
+
+===== 组件归因（IS）=====
+-- 1D --
+  rsi          n=29    IC=-0.036 胜率=51.7%
+  structure    n=1800  IC=-0.013 胜率=48.6%
+  wyckoff      n=1800  IC=-0.008 胜率=48.7%
+  mtf          n=1307  IC=+0.007 胜率=50.5%
+  ema          n=1800  IC=+0.011 胜率=49.2%
+  magnet       n=2017  IC=+0.013 胜率=50.7%
+  pd           n=1750  IC=+0.020 胜率=51.5%
+  ob           n=286   IC=+0.025 胜率=53.1%
+  cvd          n=506   IC=+0.051 胜率=52.4%
+-- 1W --
+  ob           n=286   IC=-0.157 胜率=43.0%
+  rsi          n=29    IC=-0.151 胜率=41.4%
+  mtf          n=1307  IC=-0.085 胜率=46.3%
+  ema          n=1800  IC=-0.046 胜率=49.2%
+  wyckoff      n=1800  IC=-0.003 胜率=50.7%
+  structure    n=1800  IC=-0.002 胜率=50.6%
+  magnet       n=2017  IC=+0.015 胜率=51.7%
+  pd           n=1750  IC=+0.032 胜率=50.5%
+  cvd          n=506   IC=+0.078 胜率=53.1%

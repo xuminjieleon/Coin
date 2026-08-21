@@ -1,0 +1,150 @@
+[calc] BTCUSDT: 100/1000 (11s elapsed)
+[calc] BTCUSDT: 200/1000 (25s elapsed)
+[calc] BTCUSDT: 300/1000 (39s elapsed)
+[calc] BTCUSDT: 400/1000 (54s elapsed)
+[calc] BTCUSDT: 500/1000 (69s elapsed)
+[calc] BTCUSDT: 600/1000 (85s elapsed)
+[calc] BTCUSDT: 700/1000 (101s elapsed)
+[calc] BTCUSDT: 800/1000 (117s elapsed)
+[calc] BTCUSDT: 900/1000 (132s elapsed)
+[calc] BTCUSDT: 1000/1000 (148s elapsed)
+[data] BTCUSDT: 17000 bars, 1000 points
+[calc] ETHUSDT: 100/1000 (11s elapsed)
+[calc] ETHUSDT: 200/1000 (24s elapsed)
+[calc] ETHUSDT: 300/1000 (38s elapsed)
+[calc] ETHUSDT: 400/1000 (50s elapsed)
+[calc] ETHUSDT: 500/1000 (56s elapsed)
+[calc] ETHUSDT: 600/1000 (62s elapsed)
+[calc] ETHUSDT: 700/1000 (67s elapsed)
+[calc] ETHUSDT: 800/1000 (72s elapsed)
+[calc] ETHUSDT: 900/1000 (77s elapsed)
+[calc] ETHUSDT: 1000/1000 (82s elapsed)
+[data] ETHUSDT: 17000 bars, 1000 points
+[calc] SOLUSDT: 100/1000 (4s elapsed)
+[calc] SOLUSDT: 200/1000 (8s elapsed)
+[calc] SOLUSDT: 300/1000 (13s elapsed)
+[calc] SOLUSDT: 400/1000 (19s elapsed)
+[calc] SOLUSDT: 500/1000 (25s elapsed)
+[calc] SOLUSDT: 600/1000 (30s elapsed)
+[calc] SOLUSDT: 700/1000 (35s elapsed)
+[calc] SOLUSDT: 800/1000 (41s elapsed)
+[calc] SOLUSDT: 900/1000 (46s elapsed)
+[calc] SOLUSDT: 1000/1000 (52s elapsed)
+[data] SOLUSDT: 17000 bars, 1000 points
+[cache] saved 3000 records
+folds: A=1200 B=900 C=900 (time-ordered)
+
+===== 基线（当前生产几何，严格市价结算超时单）=====
+  fold A: n=514/593 fill=87% 非亏损=79.6% EV=+0.103R
+  fold B: n=374/442 fill=85% 非亏损=83.2% EV=+0.118R
+  fold C: n=386/443 fill=87% 非亏损=85.5% EV=+0.251R
+
+----- 调参段 [A]：几何网格（gate=all）-----
+  depth=0.5 stop=1.0 be=0.25 tgt=0.75: n=514/593 fill=87% 非亏损=87.2% EV=+0.194R
+  depth=0.5 stop=1.0 be=0.25 tgt=1.0: n=514/593 fill=87% 非亏损=87.2% EV=+0.144R
+  depth=0.5 stop=1.0 be=0.25 tgt=1.5: n=514/593 fill=87% 非亏损=87.2% EV=+0.111R
+  depth=0.5 stop=1.0 be=0.35 tgt=0.75: n=514/593 fill=87% 非亏损=85.4% EV=+0.182R
+  depth=0.5 stop=1.0 be=0.35 tgt=1.0: n=514/593 fill=87% 非亏损=85.4% EV=+0.134R
+  depth=0.5 stop=1.0 be=0.35 tgt=1.5: n=514/593 fill=87% 非亏损=85.4% EV=+0.105R
+  depth=0.5 stop=1.0 be=0.5 tgt=0.75: n=514/593 fill=87% 非亏损=79.6% EV=+0.146R
+  depth=0.5 stop=1.0 be=0.5 tgt=1.0: n=514/593 fill=87% 非亏损=79.6% EV=+0.103R
+  depth=0.5 stop=1.0 be=0.5 tgt=1.5: n=514/593 fill=87% 非亏损=79.6% EV=+0.079R
+  depth=0.5 stop=1.5 be=0.25 tgt=0.75: n=514/593 fill=87% 非亏损=92.6% EV=+0.132R
+  depth=0.5 stop=1.5 be=0.25 tgt=1.0: n=514/593 fill=87% 非亏损=92.6% EV=+0.111R
+  depth=0.5 stop=1.5 be=0.25 tgt=1.5: n=514/593 fill=87% 非亏损=92.6% EV=+0.095R
+  depth=0.5 stop=1.5 be=0.35 tgt=0.75: n=514/593 fill=87% 非亏损=87.7% EV=+0.124R
+  depth=0.5 stop=1.5 be=0.35 tgt=1.0: n=514/593 fill=87% 非亏损=87.7% EV=+0.103R
+  depth=0.5 stop=1.5 be=0.35 tgt=1.5: n=514/593 fill=87% 非亏损=87.7% EV=+0.093R
+  depth=0.5 stop=1.5 be=0.5 tgt=0.75: n=514/593 fill=87% 非亏损=73.2% EV=+0.061R
+  depth=0.75 stop=1.0 be=0.25 tgt=0.75: n=476/593 fill=80% 非亏损=87.2% EV=+0.285R
+  depth=0.75 stop=1.0 be=0.25 tgt=1.0: n=476/593 fill=80% 非亏损=87.2% EV=+0.197R
+  depth=0.75 stop=1.0 be=0.25 tgt=1.5: n=476/593 fill=80% 非亏损=87.2% EV=+0.137R
+  depth=0.75 stop=1.0 be=0.35 tgt=0.75: n=476/593 fill=80% 非亏损=84.7% EV=+0.269R
+  depth=0.75 stop=1.0 be=0.35 tgt=1.0: n=476/593 fill=80% 非亏损=84.7% EV=+0.183R
+  depth=0.75 stop=1.0 be=0.35 tgt=1.5: n=476/593 fill=80% 非亏损=84.7% EV=+0.127R
+  depth=0.75 stop=1.0 be=0.5 tgt=0.75: n=476/593 fill=80% 非亏损=79.6% EV=+0.237R
+  depth=0.75 stop=1.0 be=0.5 tgt=1.0: n=476/593 fill=80% 非亏损=79.6% EV=+0.147R
+  depth=0.75 stop=1.0 be=0.5 tgt=1.5: n=476/593 fill=80% 非亏损=79.6% EV=+0.092R
+  depth=0.75 stop=1.5 be=0.25 tgt=0.75: n=476/593 fill=80% 非亏损=93.1% EV=+0.172R
+  depth=0.75 stop=1.5 be=0.25 tgt=1.0: n=476/593 fill=80% 非亏损=93.1% EV=+0.134R
+  depth=0.75 stop=1.5 be=0.25 tgt=1.5: n=476/593 fill=80% 非亏损=93.1% EV=+0.104R
+  depth=0.75 stop=1.5 be=0.35 tgt=0.75: n=476/593 fill=80% 非亏损=88.9% EV=+0.147R
+  depth=0.75 stop=1.5 be=0.35 tgt=1.0: n=476/593 fill=80% 非亏损=88.9% EV=+0.111R
+  depth=0.75 stop=1.5 be=0.35 tgt=1.5: n=476/593 fill=80% 非亏损=88.9% EV=+0.078R
+  depth=0.75 stop=1.5 be=0.5 tgt=0.75: n=476/593 fill=80% 非亏损=79.6% EV=+0.107R
+  depth=0.75 stop=1.5 be=0.5 tgt=1.0: n=476/593 fill=80% 非亏损=79.6% EV=+0.080R
+----- 调参段 [A]：门控阶段（top3 几何 x 4 门控）-----
+  (0.75, 1.5, 0.25, 0.75, 96) x all: n=476/593 fill=80% 非亏损=93.1% EV=+0.172R
+  (0.75, 1.5, 0.25, 0.75, 96) x aligned25: n=349/430 fill=81% 非亏损=92.3% EV=+0.150R
+  (0.75, 1.5, 0.25, 0.75, 96) x ranging: n=103/129 fill=80% 非亏损=91.3% EV=+0.080R
+  (0.75, 1.5, 0.25, 0.75, 96) x not_expanded: n=324/413 fill=78% 非亏损=91.0% EV=+0.140R
+  (0.75, 1.5, 0.25, 1.0, 96) x all: n=476/593 fill=80% 非亏损=93.1% EV=+0.134R
+  (0.75, 1.5, 0.25, 1.0, 96) x aligned25: n=349/430 fill=81% 非亏损=92.3% EV=+0.115R
+  (0.75, 1.5, 0.25, 1.0, 96) x ranging: n=103/129 fill=80% 非亏损=91.3% EV=+0.068R
+  (0.75, 1.5, 0.25, 1.0, 96) x not_expanded: n=324/413 fill=78% 非亏损=91.0% EV=+0.090R
+  (0.75, 1.5, 0.25, 1.5, 96) x all: n=476/593 fill=80% 非亏损=93.1% EV=+0.104R
+  (0.75, 1.5, 0.25, 1.5, 96) x aligned25: n=349/430 fill=81% 非亏损=92.3% EV=+0.090R
+  (0.75, 1.5, 0.25, 1.5, 96) x not_expanded: n=324/413 fill=78% 非亏损=91.0% EV=+0.068R
+
+[Phase1 选定] geo=(0.75, 1.5, 0.25, 0.75, 96) gate=all
+[Phase1 盲测 B] n=352/442 fill=80% 非亏损=94.9% EV=+0.145R
+
+----- 调参段 [A+B]：几何网格（gate=all）-----
+  depth=0.5 stop=1.0 be=0.25 tgt=0.75: n=888/1035 fill=86% 非亏损=87.6% EV=+0.189R
+  depth=0.5 stop=1.0 be=0.25 tgt=1.0: n=888/1035 fill=86% 非亏损=87.6% EV=+0.137R
+  depth=0.5 stop=1.0 be=0.25 tgt=1.5: n=888/1035 fill=86% 非亏损=87.6% EV=+0.087R
+  depth=0.5 stop=1.0 be=0.35 tgt=0.75: n=888/1035 fill=86% 非亏损=86.1% EV=+0.182R
+  depth=0.5 stop=1.0 be=0.35 tgt=1.0: n=888/1035 fill=86% 非亏损=86.1% EV=+0.132R
+  depth=0.5 stop=1.0 be=0.35 tgt=1.5: n=888/1035 fill=86% 非亏损=86.1% EV=+0.084R
+  depth=0.5 stop=1.0 be=0.5 tgt=0.75: n=888/1035 fill=86% 非亏损=81.1% EV=+0.160R
+  depth=0.5 stop=1.0 be=0.5 tgt=1.0: n=888/1035 fill=86% 非亏损=81.1% EV=+0.109R
+  depth=0.5 stop=1.0 be=0.5 tgt=1.5: n=888/1035 fill=86% 非亏损=81.1% EV=+0.071R
+  depth=0.5 stop=1.5 be=0.25 tgt=0.75: n=888/1035 fill=86% 非亏损=92.8% EV=+0.123R
+  depth=0.5 stop=1.5 be=0.25 tgt=1.0: n=888/1035 fill=86% 非亏损=92.8% EV=+0.090R
+  depth=0.5 stop=1.5 be=0.25 tgt=1.5: n=888/1035 fill=86% 非亏损=92.8% EV=+0.070R
+  depth=0.5 stop=1.5 be=0.35 tgt=0.75: n=888/1035 fill=86% 非亏损=88.1% EV=+0.115R
+  depth=0.5 stop=1.5 be=0.35 tgt=1.0: n=888/1035 fill=86% 非亏损=88.1% EV=+0.087R
+  depth=0.5 stop=1.5 be=0.35 tgt=1.5: n=888/1035 fill=86% 非亏损=88.1% EV=+0.070R
+  depth=0.5 stop=1.5 be=0.5 tgt=0.75: n=888/1035 fill=86% 非亏损=74.3% EV=+0.074R
+  depth=0.5 stop=1.5 be=0.5 tgt=1.0: n=888/1035 fill=86% 非亏损=74.3% EV=+0.052R
+  depth=0.75 stop=1.0 be=0.25 tgt=0.75: n=828/1035 fill=80% 非亏损=87.9% EV=+0.296R
+  depth=0.75 stop=1.0 be=0.25 tgt=1.0: n=828/1035 fill=80% 非亏损=87.9% EV=+0.187R
+  depth=0.75 stop=1.0 be=0.25 tgt=1.5: n=828/1035 fill=80% 非亏损=87.9% EV=+0.111R
+  depth=0.75 stop=1.0 be=0.35 tgt=0.75: n=828/1035 fill=80% 非亏损=85.6% EV=+0.279R
+  depth=0.75 stop=1.0 be=0.35 tgt=1.0: n=828/1035 fill=80% 非亏损=85.6% EV=+0.170R
+  depth=0.75 stop=1.0 be=0.35 tgt=1.5: n=828/1035 fill=80% 非亏损=85.6% EV=+0.097R
+  depth=0.75 stop=1.0 be=0.5 tgt=0.75: n=828/1035 fill=80% 非亏损=81.4% EV=+0.262R
+  depth=0.75 stop=1.0 be=0.5 tgt=1.0: n=828/1035 fill=80% 非亏损=81.4% EV=+0.152R
+  depth=0.75 stop=1.0 be=0.5 tgt=1.5: n=828/1035 fill=80% 非亏损=81.4% EV=+0.080R
+  depth=0.75 stop=1.5 be=0.25 tgt=0.75: n=828/1035 fill=80% 非亏损=93.8% EV=+0.160R
+  depth=0.75 stop=1.5 be=0.25 tgt=1.0: n=828/1035 fill=80% 非亏损=93.8% EV=+0.118R
+  depth=0.75 stop=1.5 be=0.25 tgt=1.5: n=828/1035 fill=80% 非亏损=93.8% EV=+0.082R
+  depth=0.75 stop=1.5 be=0.35 tgt=0.75: n=828/1035 fill=80% 非亏损=90.3% EV=+0.147R
+  depth=0.75 stop=1.5 be=0.35 tgt=1.0: n=828/1035 fill=80% 非亏损=90.3% EV=+0.105R
+  depth=0.75 stop=1.5 be=0.35 tgt=1.5: n=828/1035 fill=80% 非亏损=90.3% EV=+0.066R
+  depth=0.75 stop=1.5 be=0.5 tgt=0.75: n=828/1035 fill=80% 非亏损=82.2% EV=+0.132R
+  depth=0.75 stop=1.5 be=0.5 tgt=1.0: n=828/1035 fill=80% 非亏损=82.2% EV=+0.097R
+  depth=0.75 stop=1.5 be=0.5 tgt=1.5: n=828/1035 fill=80% 非亏损=82.2% EV=+0.065R
+----- 调参段 [A+B]：门控阶段（top3 几何 x 4 门控）-----
+  (0.75, 1.5, 0.25, 0.75, 96) x all: n=828/1035 fill=80% 非亏损=93.8% EV=+0.160R
+  (0.75, 1.5, 0.25, 0.75, 96) x aligned25: n=597/738 fill=81% 非亏损=93.1% EV=+0.145R
+  (0.75, 1.5, 0.25, 0.75, 96) x ranging: n=158/200 fill=79% 非亏损=90.5% EV=+0.071R
+  (0.75, 1.5, 0.25, 0.75, 96) x not_expanded: n=576/721 fill=80% 非亏损=92.5% EV=+0.153R
+  (0.75, 1.5, 0.25, 1.0, 96) x all: n=828/1035 fill=80% 非亏损=93.8% EV=+0.118R
+  (0.75, 1.5, 0.25, 1.0, 96) x aligned25: n=597/738 fill=81% 非亏损=93.1% EV=+0.106R
+  (0.75, 1.5, 0.25, 1.0, 96) x not_expanded: n=576/721 fill=80% 非亏损=92.5% EV=+0.099R
+  (0.75, 1.5, 0.25, 1.5, 96) x all: n=828/1035 fill=80% 非亏损=93.8% EV=+0.082R
+  (0.75, 1.5, 0.25, 1.5, 96) x aligned25: n=597/738 fill=81% 非亏损=93.1% EV=+0.082R
+  (0.75, 1.5, 0.25, 1.5, 96) x not_expanded: n=576/721 fill=80% 非亏损=92.5% EV=+0.069R
+
+[Phase2 选定] geo=(0.75, 1.5, 0.25, 0.75, 96) gate=all
+[Phase2 盲测 C] n=356/443 fill=80% 非亏损=91.0% EV=+0.148R
+
+===== 抽稀独立性校验（C 段，Phase2 配置）=====
+  1/1: n=356/443 fill=80% 非亏损=91.0% EV=+0.148R
+  1/4: n=102/123 fill=83% 非亏损=91.2% EV=+0.191R
+  1/8: n=52/63 fill=83% 非亏损=90.4% EV=+0.207R
+===== 分币种（C 段，Phase2 配置）=====
+  BTCUSDT: n=130/154 fill=84% 非亏损=92.3% EV=+0.206R
+  ETHUSDT: n=115/146 fill=79% 非亏损=90.4% EV=+0.133R
+  SOLUSDT: n=111/143 fill=78% 非亏损=90.1% EV=+0.097R

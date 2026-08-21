@@ -1,0 +1,7 @@
+[
+  {"date": "2026-09-11", "time": "20:30", "title": "美国 8 月 CPI（每月中旬发布，日期以 BLS 为准）", "impact": "high", "kind": "macro"},
+  {"date": "2026-09-15", "time": "02:00", "title": "美联储 FOMC 议息会议（9 月，次日凌晨公布决议）", "impact": "high", "kind": "macro"},
+  {"date": "2026-10-13", "time": "20:30", "title": "美国 9 月 CPI（日期以 BLS 为准）", "impact": "high", "kind": "macro"},
+  {"date": "2026-10-27", "time": "02:00", "title": "美联储 FOMC 议息会议（10 月）", "impact": "high", "kind": "macro"},
+  {"date": "2026-12-08", "time": "03:00", "title": "美联储 FOMC 议息会议（12 月，含经济预测）", "impact": "high", "kind": "macro"}
+]
