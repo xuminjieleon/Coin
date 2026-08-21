@@ -356,19 +356,22 @@ def build_summary(
 def _build_trade_plan(*, bias: str, score: int, price: float, smc: dict, atr: float | None,
                       buy_pools: list, sell_pools: list, pd_zone: dict,
                       high_confidence: bool = False, confidence_dir: str | None = None) -> dict | None:
-    """Executable setup, geometry calibrated by walk-forward sweep
-    (tests/plan_sweep.py: tune A -> blind B 94.9%, re-tune A+B -> blind C 91.0%,
-    both phases selected the SAME config):
+    """Executable setup, geometry validated by walk-forward (tests/plan_sweep2.py)
+    AND leave-one-symbol-out cross-validation (tests/loso_validation.py):
 
       pullback entry 0.75 ATR (zone edge within 0.75 ATR refines it)
-      stop           1.5 ATR
-      BE trigger     +0.25 R   (stop -> entry after a small favorable move)
-      target1        +0.75 R
-      target2        +1.5  R   (runner; backtest metric is T1 with BE mgmt)
-      time exit      96 bars   (~4 days on 1h)
+      stop           2.5  ATR
+      BE trigger     +0.10 R, scale-out: half the position exits here locking
+                     +0.05 R, stop moves to entry (breakeven management)
+      runner target  +0.75 R (remaining half)
+      time exit      96 bars (~4 days on 1h), marked to market
 
-    Direction: high-confidence CVD confluence when present, else the composite
-    bias at |score| >= 25. EV constraint held at +0.15R per filled trade.
+    Validation: walk-forward blind B 98.2% / blind C 94.8% (ranging gate
+    rejected: blind EV broke the floor); all-gate LOSO blind on held-out
+    symbols BTC/ETH/SOL: 97.2% / 98.0% / 98.4% non-loss, EV +0.096/+0.075/
+    +0.069 R. In-sample 99%+ cells exist but their blind EV sits at the
+    floor -> ~98% is the honest EV-constrained ceiling. Fees/slippage are
+    NOT modeled (maker entry ~0.02%): net EV roughly +0.03~0.06 R.
     """
     if atr is None or atr <= 0:
         return None
@@ -379,7 +382,8 @@ def _build_trade_plan(*, bias: str, score: int, price: float, smc: dict, atr: fl
     else:
         return None
 
-    depth, stopw = 0.75, 1.5
+    depth, stopw = 0.75, 2.5
+    be_frac, tgt_r = 0.10, 0.75
     # entry: nearest quality zone edge within 0.75 ATR, else pullback
     if long:
         zones = [z for z in smc["orderBlocks"] + smc["fvgs"]
@@ -404,23 +408,24 @@ def _build_trade_plan(*, bias: str, score: int, price: float, smc: dict, atr: fl
     risk = abs(entry - stop)
     if risk <= 0:
         return None
-    t1 = entry + 0.75 * risk if long else entry - 0.75 * risk
-    t2 = entry + 1.5 * risk if long else entry - 1.5 * risk
-    be_trigger = entry + 0.25 * risk if long else entry - 0.25 * risk
+    t1 = entry + tgt_r * risk if long else entry - tgt_r * risk
+    be_trigger = entry + be_frac * risk if long else entry - be_frac * risk
     note = (
-        "CVD 多周期共振方向；回踩 0.75×ATR 限价入场，1.5×ATR 止损；"
-        "触及 +0.25R 即将止损移至入场价（保本管理），目标 0.75R/1.5R，96 根 K 线未触发则市价离场"
-        if high_confidence
-        else "结构评分方向；回踩 0.75×ATR 限价入场，1.5×ATR 止损；"
-        "触及 +0.25R 即将止损移至入场价（保本管理），目标 0.75R/1.5R，96 根 K 线未触发则市价离场"
+        "CVD 多周期共振方向" if high_confidence else "结构评分方向"
+    ) + (
+        "；回踩 0.75×ATR 限价入场，2.5×ATR 止损；触及 +0.1R 先出半仓锁定利润并将止损移至入场价"
+        "（保本管理），剩余半仓目标 +0.75R，96 根 K 线未触发则市价离场"
     )
     return {
         "direction": "long" if long else "short",
         "entry": round(float(entry), 8),
         "stop": round(float(stop), 8),
         "target1": round(float(t1), 8),
-        "target2": round(float(t2), 8),
+        "target2": None,
         "beTrigger": round(float(be_trigger), 8),
-        "rr": 0.75,
+        "beR": be_frac,
+        "targetR": tgt_r,
+        "scaleOut": True,
+        "rr": 0.43,  # blended max: 0.5*0.1R + 0.5*0.75R
         "note": note,
     }

@@ -566,6 +566,12 @@ body {
   color: #f0b90b;
 }
 
+.tp-rule {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
 .tp-backtest-line {
   display: flex;
   align-items: center;

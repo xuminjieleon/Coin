@@ -1,0 +1,134 @@
+[calc] BTCUSDT: 100/1000 (12s elapsed)
+[calc] BTCUSDT: 200/1000 (27s elapsed)
+[calc] BTCUSDT: 300/1000 (43s elapsed)
+[calc] BTCUSDT: 400/1000 (60s elapsed)
+[calc] BTCUSDT: 500/1000 (77s elapsed)
+[calc] BTCUSDT: 600/1000 (94s elapsed)
+[calc] BTCUSDT: 700/1000 (112s elapsed)
+[calc] BTCUSDT: 800/1000 (129s elapsed)
+[calc] BTCUSDT: 900/1000 (144s elapsed)
+[calc] BTCUSDT: 1000/1000 (161s elapsed)
+[data] BTCUSDT: 17000 bars, 1000 points
+[calc] ETHUSDT: 100/1000 (12s elapsed)
+[calc] ETHUSDT: 200/1000 (17s elapsed)
+[calc] ETHUSDT: 300/1000 (23s elapsed)
+[calc] ETHUSDT: 400/1000 (28s elapsed)
+[calc] ETHUSDT: 500/1000 (34s elapsed)
+[calc] ETHUSDT: 600/1000 (40s elapsed)
+[calc] ETHUSDT: 700/1000 (46s elapsed)
+[calc] ETHUSDT: 800/1000 (51s elapsed)
+[calc] ETHUSDT: 900/1000 (57s elapsed)
+[calc] ETHUSDT: 1000/1000 (63s elapsed)
+[data] ETHUSDT: 17000 bars, 1000 points
+[calc] SOLUSDT: 100/1000 (4s elapsed)
+[calc] SOLUSDT: 200/1000 (10s elapsed)
+[calc] SOLUSDT: 300/1000 (15s elapsed)
+[calc] SOLUSDT: 400/1000 (21s elapsed)
+[calc] SOLUSDT: 500/1000 (27s elapsed)
+[calc] SOLUSDT: 600/1000 (32s elapsed)
+[calc] SOLUSDT: 700/1000 (39s elapsed)
+[calc] SOLUSDT: 800/1000 (44s elapsed)
+[calc] SOLUSDT: 900/1000 (50s elapsed)
+[calc] SOLUSDT: 1000/1000 (56s elapsed)
+[data] SOLUSDT: 17000 bars, 1000 points
+[cache] saved 3000 records
+folds: A=1200 B=900 C=900 (time-ordered)
+
+===== 基线（当前生产几何 = v1 走样本配置）=====
+  fold A: n=476/593 fill=80% 非亏损=93.1% EV=+0.172R
+  fold B: n=352/442 fill=80% 非亏损=94.9% EV=+0.145R
+  fold C: n=356/443 fill=80% 非亏损=91.0% EV=+0.148R
+
+----- 调参段 [A]：几何网格（gate=all，96 格）-----
+  满足约束的格子: 96/96；Top-10（非亏损率/EV 边界）：
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain: n=476/593 fill=80% 非亏损=98.9% EV=+0.095R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout: n=476/593 fill=80% 非亏损=98.9% EV=+0.084R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain: n=476/593 fill=80% 非亏损=98.9% EV=+0.080R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 scaleout: n=476/593 fill=80% 非亏损=98.9% EV=+0.065R
+  depth=0.75 stop=2.5 be=0.1 tgt=0.75 scaleout: n=476/593 fill=80% 非亏损=98.5% EV=+0.104R
+  depth=0.75 stop=2.5 be=0.1 tgt=0.75 plain: n=476/593 fill=80% 非亏损=98.5% EV=+0.092R
+  depth=0.75 stop=2.5 be=0.1 tgt=1.0 scaleout: n=476/593 fill=80% 非亏损=98.5% EV=+0.086R
+  depth=0.75 stop=2.5 be=0.1 tgt=1.0 plain: n=476/593 fill=80% 非亏损=98.5% EV=+0.078R
+  depth=1.0 stop=2.5 be=0.05 tgt=0.75 plain: n=444/593 fill=75% 非亏损=98.4% EV=+0.089R
+  depth=1.0 stop=2.5 be=0.05 tgt=0.75 scaleout: n=444/593 fill=75% 非亏损=98.4% EV=+0.082R
+  按 EV 最高的 5 格（参照）：
+  depth=1.0 stop=1.5 be=0.25 tgt=0.75 scaleout: n=444/593 fill=75% 非亏损=93.2% EV=+0.258R
+  depth=1.0 stop=1.5 be=0.15 tgt=0.75 scaleout: n=444/593 fill=75% 非亏损=94.6% EV=+0.230R
+  depth=0.75 stop=1.5 be=0.25 tgt=0.75 scaleout: n=476/593 fill=80% 非亏损=93.1% EV=+0.225R
+  depth=1.0 stop=1.5 be=0.1 tgt=0.75 scaleout: n=444/593 fill=75% 非亏损=94.6% EV=+0.212R
+  depth=1.0 stop=1.5 be=0.15 tgt=0.75 plain: n=444/593 fill=75% 非亏损=94.6% EV=+0.208R
+----- 调参段 [A]：门控阶段（top3 几何 x 4 门控）-----
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x all: n=476/593 fill=80% 非亏损=98.9% EV=+0.095R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x aligned25: n=349/430 fill=81% 非亏损=99.1% EV=+0.090R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x ranging: n=103/129 fill=80% 非亏损=100.0% EV=+0.058R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x not_expanded: n=324/413 fill=78% 非亏损=98.8% EV=+0.092R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x all: n=476/593 fill=80% 非亏损=98.9% EV=+0.084R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x aligned25: n=349/430 fill=81% 非亏损=99.1% EV=+0.083R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x ranging: n=103/129 fill=80% 非亏损=100.0% EV=+0.061R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x not_expanded: n=324/413 fill=78% 非亏损=98.8% EV=+0.080R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain x all: n=476/593 fill=80% 非亏损=98.9% EV=+0.080R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain x aligned25: n=349/430 fill=81% 非亏损=99.1% EV=+0.080R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain x not_expanded: n=324/413 fill=78% 非亏损=98.8% EV=+0.074R
+
+[Phase1 选定] depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x ranging
+  邻格单调性（选定格 depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout）：
+    chosen: n=103/129 fill=80% 非亏损=100.0% EV=+0.061R
+    depth=0.75 stop=1.5 be=0.05 tgt=0.75 scaleout: n=103/129 fill=80% 非亏损=96.1% EV=+0.116R
+    depth=0.75 stop=2.0 be=0.05 tgt=0.75 scaleout: n=103/129 fill=80% 非亏损=100.0% EV=+0.103R
+    depth=0.75 stop=2.5 be=0.1 tgt=0.75 scaleout: n=103/129 fill=80% 非亏损=100.0% EV=+0.085R
+    depth=0.75 stop=2.5 be=0.15 tgt=0.75 scaleout: n=103/129 fill=80% 非亏损=99.0% EV=+0.107R
+    depth=0.75 stop=2.5 be=0.25 tgt=0.75 scaleout: n=103/129 fill=80% 非亏损=87.4% EV=+0.039R
+[Phase1 盲测 B] n=55/71 fill=77% 非亏损=98.2% EV=+0.040R
+
+----- 调参段 [A+B]：几何网格（gate=all，96 格）-----
+  满足约束的格子: 95/96；Top-10（非亏损率/EV 边界）：
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain: n=828/1035 fill=80% 非亏损=99.2% EV=+0.079R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout: n=828/1035 fill=80% 非亏损=99.2% EV=+0.075R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain: n=828/1035 fill=80% 非亏损=99.2% EV=+0.070R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 scaleout: n=828/1035 fill=80% 非亏损=99.2% EV=+0.062R
+  depth=0.75 stop=2.5 be=0.1 tgt=0.75 scaleout: n=828/1035 fill=80% 非亏损=98.9% EV=+0.097R
+  depth=0.75 stop=2.5 be=0.1 tgt=1.0 scaleout: n=828/1035 fill=80% 非亏损=98.9% EV=+0.085R
+  depth=0.75 stop=2.5 be=0.1 tgt=0.75 plain: n=828/1035 fill=80% 非亏损=98.9% EV=+0.079R
+  depth=0.75 stop=2.5 be=0.1 tgt=1.0 plain: n=828/1035 fill=80% 非亏损=98.9% EV=+0.070R
+  depth=1.0 stop=2.5 be=0.05 tgt=0.75 plain: n=780/1035 fill=75% 非亏损=98.5% EV=+0.088R
+  depth=1.0 stop=2.5 be=0.05 tgt=0.75 scaleout: n=780/1035 fill=75% 非亏损=98.5% EV=+0.080R
+  按 EV 最高的 5 格（参照）：
+  depth=1.0 stop=1.5 be=0.25 tgt=0.75 scaleout: n=780/1035 fill=75% 非亏损=93.8% EV=+0.271R
+  depth=1.0 stop=1.5 be=0.15 tgt=0.75 scaleout: n=780/1035 fill=75% 非亏损=95.0% EV=+0.244R
+  depth=1.0 stop=1.5 be=0.1 tgt=0.75 scaleout: n=780/1035 fill=75% 非亏损=95.3% EV=+0.229R
+  depth=1.0 stop=1.5 be=0.1 tgt=0.75 plain: n=780/1035 fill=75% 非亏损=95.3% EV=+0.226R
+  depth=1.0 stop=1.5 be=0.15 tgt=0.75 plain: n=780/1035 fill=75% 非亏损=95.0% EV=+0.225R
+----- 调参段 [A+B]：门控阶段（top3 几何 x 4 门控）-----
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x all: n=828/1035 fill=80% 非亏损=99.2% EV=+0.079R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x aligned25: n=597/738 fill=81% 非亏损=99.2% EV=+0.078R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x ranging: n=158/200 fill=79% 非亏损=99.4% EV=+0.051R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 plain x not_expanded: n=576/721 fill=80% 非亏损=99.0% EV=+0.082R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x all: n=828/1035 fill=80% 非亏损=99.2% EV=+0.075R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x aligned25: n=597/738 fill=81% 非亏损=99.2% EV=+0.074R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x ranging: n=158/200 fill=79% 非亏损=99.4% EV=+0.054R
+  depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x not_expanded: n=576/721 fill=80% 非亏损=99.0% EV=+0.076R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain x all: n=828/1035 fill=80% 非亏损=99.2% EV=+0.070R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain x aligned25: n=597/738 fill=81% 非亏损=99.2% EV=+0.074R
+  depth=0.75 stop=2.5 be=0.05 tgt=1.0 plain x not_expanded: n=576/721 fill=80% 非亏损=99.0% EV=+0.073R
+
+[Phase2 选定] depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout x ranging
+  邻格单调性（选定格 depth=0.75 stop=2.5 be=0.05 tgt=0.75 scaleout）：
+    chosen: n=158/200 fill=79% 非亏损=99.4% EV=+0.054R
+    depth=0.75 stop=1.5 be=0.05 tgt=0.75 scaleout: n=158/200 fill=79% 非亏损=94.9% EV=+0.105R
+    depth=0.75 stop=2.0 be=0.05 tgt=0.75 scaleout: n=158/200 fill=79% 非亏损=98.7% EV=+0.079R
+    depth=0.75 stop=2.5 be=0.1 tgt=0.75 scaleout: n=158/200 fill=79% 非亏损=99.4% EV=+0.078R
+    depth=0.75 stop=2.5 be=0.15 tgt=0.75 scaleout: n=158/200 fill=79% 非亏损=98.1% EV=+0.094R
+    depth=0.75 stop=2.5 be=0.25 tgt=0.75 scaleout: n=158/200 fill=79% 非亏损=86.7% EV=+0.041R
+[Phase2 盲测 C] n=58/77 fill=75% 非亏损=94.8% EV=+0.054R
+
+===== 抽稀独立性校验（C 段，Phase2 配置）=====
+  1/1: n=58/77 fill=75% 非亏损=94.8% EV=+0.054R
+  1/4: n=19/25 fill=76% 非亏损=100.0% EV=+0.161R
+  1/8: n=10/14 fill=71% 非亏损=100.0% EV=+0.100R
+===== 分币种（C 段，Phase2 配置）=====
+  BTCUSDT: n=26/31 fill=84% 非亏损=92.3% EV=+0.073R
+  ETHUSDT: n=16/22 fill=73% 非亏损=93.8% EV=-0.016R
+  SOLUSDT: n=16/24 fill=67% 非亏损=100.0% EV=+0.094R
+
+===== 合并盲测段 B+C（Phase2 配置，仅报告）=====
+  B+C: n=113/148 fill=76% 非亏损=96.5% EV=+0.047R

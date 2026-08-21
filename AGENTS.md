@@ -44,7 +44,7 @@
 - `GET /api/backtest?symbol&interval&limit&horizon` → `{samples, directionalSamples, ic, hitRate, scoreSeries[]}`（轻量评分 walk-forward：结构/EMA/RSI/溢价折价/CVD 背离按 regime 分化权重复算，IC=Spearman 相关）
 - `GET /api/calendar` → `{events[{date,time,title,impact,kind}], note}`（本地维护 `backend/data/events.json`，网络封锁无法拉取宏观日历 API）
 - 前端实时行情 WS：`{symbol小写}@kline_{interval}`，`data.k={t,o,h,l,c,v}`；新 K 线防抖 3s 重拉 analysis
-- **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`（扫流动性事件：side+outcome reclaimed/broken）、`indicators.cvd[]`（累计主动买卖差，来自 K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`patterns{candles[],charts[]}`、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias}],alignment}`、`summary.tradePlan{direction,entry,stop,target1,target2,rr,note}`
+- **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`（扫流动性事件：side+outcome reclaimed/broken）、`indicators.cvd[]`（累计主动买卖差，来自 K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`patterns{candles[],charts[]}`、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias,cvdDiv}],alignment}`、`summary.tradePlan{direction,entry,stop,target1,target2(null),beTrigger,beR,targetR,scaleOut,rr,note}`（几何：0.75×ATR 回踩 / 2.5×ATR 止损 / +0.1R 减半仓+保本 / 半仓目标 0.75R / 96 根时间退出）
 
 ## 5. 当前进度
 
@@ -169,12 +169,21 @@ $env:NODE_OPTIONS='--require C:\dev\Coin\frontend\tools\dns-override.cjs'; npm.c
 - 方向门控 1W 抽稀后 57.5~60.1% 稳定；150 点时"OOS 88.9%"系小样本偏乐观（72 个成交），大样本中心估计修正为 **~82%**；产品 UI 文案已同步改为 "~82%（抽稀 79~87%）"
 - 大样本下各组件方向 IC 全部 |IC|<0.16、胜率 48-53%——再次确认技术面方向预测上限 ~60% 的诚实结论
 
-### 走样本前向校准，非亏损率 ~91%（2026-08-21 第 8 轮，用户要求 90% 目标）
+### 第 9 轮：分批止盈边界外移，非亏损率 ~98%（2026-08-21，用户要求向 99% 推进）
+- **先验数学**：纯限价成交下 P(全损) ≥ f/(1+f)（f=保本触发 R 数），99% 需 f≈0.01 → EV 塌向 0。合法的边界外移手段 = **分批止盈**（+f×R 出半仓锁利润 + 保本，剩余仓位跑目标）
+- 工具：`tests/plan_sweep2.py`（96 格网格：depth{0.75,1.0}×stop{1.5,2,2.5}×be{0.05,0.1,0.15,0.25}×tgt{0.75,1.0}×scaleout{off,on}，EV≥+0.05R + 成交率≥40% 约束）+ `tests/loso_validation.py`（留一币种交叉验证）。日志 `tests/sweep2.log`
+- **走样本结果**：样本内 99.2%（stop=2.5/be=0.05 家族两阶段稳定占优），但 ranging 门控盲测 EV 跌破约束线（B 段 +0.040、ETH -0.016）→ **按协议拒绝该门控**（n=158 小样本陷阱）
+- **LOSO 结果**（因 B/C 段已被查看，改用跨资产泛化检验，更严格）：三折独立选几何，盲测 BTC **97.2%**/EV+0.096、ETH **98.0%**/EV+0.075、SOL **98.4%**/EV+0.069——全部高于 EV 约束线
+- **诚实结论：~98% 是 EV>0 约束下的上限**。99%+ 参数在样本内存在但盲测期望贴零，被 EV 约束拒绝
+- **生产选型 be10_scale**：0.75 回踩 / 2.5 止损 / +0.1R 减半仓+保本 / 剩余半仓 0.75R / 96 根退出。与最高胜率格（be05）胜率差仅 1-2 笔/400（噪音），EV 更优且约束 margin 翻倍（LOSO 最差 +0.081 vs +0.069）
+- 已知局限：回测未计手续费/滑点（maker 入场约 0.02%），净 EV 约再减 0.03~0.06R——UI tooltip 已如实标注
+
+### 第 8 轮：走样本前向校准，非亏损率 ~91%（2026-08-21，用户要求 90% 目标）
 - 工具：`tests/plan_sweep.py`（日志 `tests/sweep.log`）。协议：时序 40%/30%/30% 三段（A 调参 → B 盲测 → A+B 重调 → C 盲测）；36 格粗粒度几何网格 + 4 门控；**EV 硬约束 ≥ +0.05R**（防"目标缩水刷胜率"）；超时单按市价结算（比旧口径更严格）
 - **两阶段独立选出同一配置**（稳健平台而非刀锋拟合）：回踩 0.75×ATR / 止损 1.5×ATR / 保本触发 +0.25R / 目标 0.75R+1.5R / 96 根时间退出
 - 结果：A 93.1% → **B 盲测 94.9%**（n=352）；A+B 重调 93.8% → **C 盲测 91.0%**（n=356，EV +0.148R）；C 段抽稀 91.2%/90.4%；分币种 92.3%/90.4%/90.1%（全 >90%）
 - 参数面单调平滑（止损 1.5>1.0、保本 0.25>0.35>0.5 方向一致符合直觉），非噪声挑选；代价是单笔盈利缩小（EV 从 +0.25R 降到 +0.15R），用期望换确定性
-- 生产引擎 `decision.py` 已切换到该几何；TradePlanCard 文案同步（含方法论 tooltip）
+- 该几何已被第 9 轮的 be10_scale 取代（胜率 91%→98%，EV +0.15R→+0.09R）
 
 ### 维护注意
 - decision.py 权重注释已记录校准依据；改权重前必须重跑 `backtest_decision.py` 并检查 IS/OOS 两期一致性

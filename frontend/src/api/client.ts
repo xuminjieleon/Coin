@@ -142,8 +142,11 @@ export interface TradePlan {
   entry: number
   stop: number
   target1: number
-  target2: number
+  target2?: number | null
   beTrigger?: number
+  beR?: number
+  targetR?: number
+  scaleOut?: boolean
   rr: number
   note: string
 }
