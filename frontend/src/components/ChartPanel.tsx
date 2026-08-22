@@ -1,4 +1,4 @@
-import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react'
 import {
   init,
   dispose,
@@ -12,8 +12,7 @@ import {
   type OverlayFigure,
   type OverlayCreateFiguresCallbackParams,
 } from 'klinecharts'
-import { fetchAnalysis, type AnalysisResponse, type Candle } from '../api/client'
-import { subscribeKline, type WsKline, type WsStatus } from '../ws/binanceWs'
+import { fetchAnalysis, fetchKlines, type AnalysisResponse, type Candle } from '../api/client'
 import { buildOverlaySpecs } from './smcOverlays'
 import type { Interval } from '../types'
 
@@ -24,10 +23,10 @@ const CVD_PANE = 'cvd_pane'
 const OVERLAY_GROUP = 'smc'
 
 const PERIOD_OF: Record<Interval, Period> = {
-  '15m': { type: 'minute', span: 15 },
   '1h': { type: 'hour', span: 1 },
   '4h': { type: 'hour', span: 4 },
   '1d': { type: 'day', span: 1 },
+  '1w': { type: 'week', span: 1 },
 }
 
 // ---------- custom overlays (registered once) ----------
@@ -166,8 +165,12 @@ function registerCvdIndicator(): void {
     shortName: 'CVD',
     figures: [{ key: 'cvd', title: 'CVD: ', type: 'line' }],
     calc: (dataList, indicator) => {
-      const values = (indicator.extendData as (number | null)[] | undefined) ?? []
-      return dataList.map((_, i) => ({ cvd: values[i] ?? undefined }))
+      // extendData: {time, cvd} pairs aligned by timestamp so prepended
+      // history pages (backward paging) never shift the CVD line.
+      const pairs = indicator.extendData as { time: number; cvd: number | null }[] | undefined
+      if (!pairs) return dataList.map(() => ({ cvd: undefined }))
+      const byTime = new Map(pairs.map((p) => [p.time, p.cvd]))
+      return dataList.map((d) => ({ cvd: byTime.get(d.timestamp) ?? undefined }))
     },
   })
 }
@@ -184,8 +187,10 @@ function pricePrecisionOf(price: number): number {
 }
 
 export interface ChartPanelHandle {
-  /** Push/update a candle into the chart without reloading (used by polling fallback). */
-  pushBar: (c: Candle) => void
+  /** Sync the tail of freshly fetched candles into the chart in place:
+   *  bars newer than the chart's last bar are appended, the matching last
+   *  bar is updated, older ones are ignored. View is never reset. */
+  syncBars: (candles: Candle[]) => void
 }
 
 interface Props {
@@ -193,13 +198,11 @@ interface Props {
   interval: Interval
   analysis: AnalysisResponse | null
   onAnalysis: (a: AnalysisResponse) => void
-  onWsKline: (k: WsKline) => void
-  onWsStatus: (s: WsStatus) => void
   onError: (msg: string) => void
 }
 
 const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
-  { symbol, interval, analysis, onAnalysis, onWsKline, onWsStatus, onError },
+  { symbol, interval, analysis, onAnalysis, onError },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -207,26 +210,31 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
   const symbolRef = useRef(symbol)
   const intervalRef = useRef(interval)
   const onAnalysisRef = useRef(onAnalysis)
-  const onWsKlineRef = useRef(onWsKline)
-  const onWsStatusRef = useRef(onWsStatus)
   const onErrorRef = useRef(onError)
   // last analysis fetch per data key (short-lived to avoid stale cache)
   const fetchSlotRef = useRef<{ key: string; at: number; promise: Promise<AnalysisResponse> } | null>(null)
   // bar push callback from the chart's data loader (subscribeBar)
   const barPushRef = useRef<((d: KLineData) => void) | null>(null)
+  // history paging: 'idle' = more available, 'loading' = fetching a page, 'done' = no more
+  const [historyState, setHistoryState] = useState<'idle' | 'loading' | 'done'>('idle')
 
   symbolRef.current = symbol
   intervalRef.current = interval
   onAnalysisRef.current = onAnalysis
-  onWsKlineRef.current = onWsKline
-  onWsStatusRef.current = onWsStatus
   onErrorRef.current = onError
 
   useImperativeHandle(
     ref,
     () => ({
-      pushBar: (c: Candle) => {
-        barPushRef.current?.(toKLineData(c))
+      syncBars: (candles: Candle[]) => {
+        const chart = chartRef.current
+        if (!chart || candles.length === 0) return
+        const list = chart.getDataList()
+        const lastTs = list.length > 0 ? list[list.length - 1].timestamp : 0
+        for (const c of candles) {
+          if (c.time < lastTs) continue
+          barPushRef.current?.(toKLineData(c))
+        }
       },
     }),
     [],
@@ -316,10 +324,28 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
     })
     chart.setPaneOptions({ id: CVD_PANE, height: 60, minHeight: 40 })
 
-    // data loader: chart pulls candles on symbol/period change, pushes live bars via WS
-    let wsUnsubscribe: (() => void) | null = null
+    // data loader: chart pulls candles on symbol/period change. Live updates are
+    // NOT subscribed (manual / 5-min refresh mode); subscribeBar only keeps the
+    // push callback so App can sync refreshed bars into the chart in place.
+    // History paging: klinecharts fires type='forward' with the OLDEST loaded
+    // timestamp when the view reaches the left edge (returned bars are
+    // prepended); 'backward' would append newer bars, which refresh handles.
     chart.setDataLoader({
-      getBars: async ({ type, callback }) => {
+      getBars: async ({ type, timestamp, callback }) => {
+        if (type === 'forward' && timestamp != null) {
+          setHistoryState('loading')
+          try {
+            const page = await fetchKlines(symbolRef.current, intervalRef.current, 500, timestamp - 1)
+            const bars = page.candles.map(toKLineData)
+            const more = bars.length >= 500
+            setHistoryState(more ? 'idle' : 'done')
+            callback(bars, more ? { forward: true, backward: false } : false)
+          } catch {
+            setHistoryState('idle')
+            callback([], false)
+          }
+          return
+        }
         if (type !== 'init') {
           callback([], false)
           return
@@ -342,7 +368,8 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
         try {
           const a = await fetchSlotRef.current.promise
           onAnalysisRef.current(a)
-          callback(a.candles.map(toKLineData), false)
+          setHistoryState(a.candles.length >= 500 ? 'idle' : 'done')
+          callback(a.candles.map(toKLineData), { forward: true, backward: false })
           // fix price precision now that magnitude is known
           const last = a.candles[a.candles.length - 1]
           const p = pricePrecisionOf(last.close)
@@ -357,23 +384,10 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
         }
       },
       subscribeBar: ({ callback }) => {
-        const sym = symbolRef.current
-        const itv = intervalRef.current
         barPushRef.current = callback
-        wsUnsubscribe = subscribeKline(
-          sym,
-          itv,
-          (k) => {
-            callback(toKLineData(k))
-            onWsKlineRef.current(k)
-          },
-          (s) => onWsStatusRef.current(s),
-        )
       },
       unsubscribeBar: () => {
         barPushRef.current = null
-        wsUnsubscribe?.()
-        wsUnsubscribe = null
       },
     })
 
@@ -382,7 +396,6 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
 
     return () => {
       ro.disconnect()
-      wsUnsubscribe?.()
       barPushRef.current = null
       dispose(containerRef.current!)
       chartRef.current = null
@@ -394,9 +407,16 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
   useEffect(() => {
     const chart = chartRef.current
     if (!chart) return
+    setHistoryState('idle')
     chart.setPeriod(PERIOD_OF[interval])
     chart.setSymbol({ ticker: symbol })
   }, [symbol, interval])
+
+  // "load more history" button: scroll to the oldest bar, which makes the
+  // chart's data loader fire a forward (prepend) request for one more page.
+  const loadMoreHistory = () => {
+    chartRef.current?.scrollToDataIndex(0)
+  }
 
   // SMC overlays from analysis + CVD indicator refresh
   useEffect(() => {
@@ -409,10 +429,14 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
 
     // refresh CVD pane values (remove + recreate with new extendData)
     chart.removeIndicator({ name: 'CVD' })
+    const cvdPairs = analysis.candles.map((c, i) => ({
+      time: c.time,
+      cvd: analysis.indicators.cvd?.[i] ?? null,
+    }))
     chart.createIndicator({
       name: 'CVD',
       paneId: CVD_PANE,
-      extendData: analysis.indicators.cvd,
+      extendData: cvdPairs,
       styles: { lines: [{ color: '#4dd0e1', size: 1 }] },
     })
 
@@ -473,7 +497,20 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
     }
   }, [analysis, symbol, interval])
 
-  return <div className="chart-container" ref={containerRef} />
+  return (
+    <div className="chart-container" ref={containerRef}>
+      {historyState !== 'done' && (
+        <button
+          className={`chart-history-btn${historyState === 'loading' ? ' chart-history-busy' : ''}`}
+          onClick={loadMoreHistory}
+          disabled={historyState === 'loading'}
+          title="向左加载更早的历史 K 线（每次 500 根；也可直接把图表滚动到最左侧自动加载）"
+        >
+          {historyState === 'loading' ? '历史加载中…' : '⟵ 加载更多历史'}
+        </button>
+      )}
+    </div>
+  )
 })
 
 export default ChartPanel

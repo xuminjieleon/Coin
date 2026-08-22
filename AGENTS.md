@@ -26,55 +26,67 @@
 
 ```
 浏览器(React SPA, :5173)
-  ├─ REST /api/* ──→ FastAPI 后端(:8000)
-  │                    ├─ services/binance.py    币安数据(主源+镜像failover+冷却)
-  │                    └─ services/analysis/     swings→smc→indicators→volume→decision
-  └─ WebSocket ──→ wss://fstream.binance.com (失败降级 wss://stream.binance.com:9443)
+  └─ REST /api/* ──→ FastAPI 后端(:8000)
+                      ├─ services/binance.py     币安数据(主源+镜像failover+冷却)
+                      ├─ services/gateio.py      Gate.io 衍生品回退源
+                      ├─ services/kline_cache.py K线本地SQLite缓存(不可变历史+连续性检测)
+                      └─ services/analysis/      swings→smc→indicators→volume→decision
 ```
 
-布局：顶部 Header（搜索/周期/WS状态）｜左侧 klinecharts 主图+SMC 标注+EMA/RSI｜右侧 360px 栏：决策摘要卡 → 衍生品面板 → 成交量分布。
+> **数据模式（2026-08-22 起）**：不使用实时推送（币安 WS 模块已删除）。统一为**手动刷新按钮 + 每 5 分钟自动刷新**（开关持久化 localStorage `coinlens.autoRefresh`），刷新时一次性重拉 analysis/derivatives/backtest 并把新 K 线尾部原地同步进图表（`syncBars`：时间戳等于最后一根→更新、更大→追加、更旧→忽略，不重置视图）。
+
+布局：顶部 Header（搜索/周期/刷新按钮/自动刷新开关/预警铃铛/更新时间）｜左侧 klinecharts 主图+SMC 标注+EMA/RSI｜右侧 360px 栏：决策摘要卡 → 衍生品面板 → 成交量分布。
 
 ## 4. API 契约（前后端共同遵守）
 
 - `GET /api/health` → `{"ok": true}`
+- `GET /api/klines?symbol&interval&limit&endTime` → `{symbol, interval, candles[]}`（纯 K 线无分析，供图表向左滚动加载历史分页；endTime 可选，返回其之前的一页；**走 kline_cache 本地缓存**，已缓存窗口直接命中不再请求币安）
 - `GET /api/symbols?q=` → `[{"symbol","base"}]`（≤50 条）
 - `GET /api/analysis?symbol&interval&limit` → `{symbol, interval, candles[], smc{swings, structureEvents, orderBlocks, fvgs, liquidityPools, premiumDiscount}, indicators{ema20/50/200, rsi14, atr14, adx14}(与candles等长含null), volumeProfile{poc,vah,val,bins}, summary{score(-100~100), bias, regime, keyLevels[], reasons[]}}`
-  - interval ∈ {15m,1h,4h,1d}，limit 100~1000；评分 clamp ±100；bias: ≥15 bullish / ≤-15 bearish；reasons 中文按 |weight| 降序
+  - interval ∈ {1h,4h,1d,1w}（**15m 已于 2026-08-22 移除**；**1w 为 2026-08-22 第 11 轮新增**），limit 100~1000；评分 clamp ±100；bias: ≥15 bullish / ≤-15 bearish；reasons 中文按 |weight| 降序
 - `GET /api/derivatives?symbol` → `{openInterest, openInterestValue, oiChangePct24h, oiHistory[], fundingRate, fundingHistory[], longShortRatio, longShortHistory[], takerBuySellRatio, source('binance'|'gateio'|null), options{atmIv, putCallRatio, contracts, expiry}}`（币安合约优先 → **Gate.io 回退**（futures tickers + contract_stats + contracts 规格 + options/tickers），任何字段可为 null）
-- `GET /api/backtest?symbol&interval&limit&horizon` → `{samples, directionalSamples, ic, hitRate, scoreSeries[]}`（轻量评分 walk-forward：结构/EMA/RSI/溢价折价/CVD 背离按 regime 分化权重复算，IC=Spearman 相关）
+- `GET /api/backtest?symbol&interval&limit&horizon` → `{samples, directionalSamples, ic, hitRate, scoreSeries[]}`（轻量评分 walk-forward：结构/EMA/RSI/溢价折价/CVD 背离按 regime 分化权重复算，IC=Spearman 相关；**采样窗口按周期固定**：1h/4h 2 年、1d 2 年（730 根）、1w 6 年（312 根，2 年日线样本太薄），limit 参数已废弃；走 kline_cache，首拉分页并发 4 路，之后磁盘直读——实测 1h 首拉 14.5s→缓存 1.5s）
 - `GET /api/calendar` → `{events[{date,time,title,impact,kind}], note}`（本地维护 `backend/data/events.json`，网络封锁无法拉取宏观日历 API）
-- 前端实时行情 WS：`{symbol小写}@kline_{interval}`，`data.k={t,o,h,l,c,v}`；新 K 线防抖 3s 重拉 analysis
-- **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`（扫流动性事件：side+outcome reclaimed/broken）、`indicators.cvd[]`（累计主动买卖差，来自 K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`patterns{candles[],charts[]}`、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias,cvdDiv}],alignment}`、`summary.tradePlan{direction,entry,stop,target1,target2(null),beTrigger,beR,targetR,scaleOut,rr,note}`（几何：0.75×ATR 回踩 / 2.5×ATR 止损 / +0.1R 减半仓+保本 / 半仓目标 0.75R / 96 根时间退出）
+- `POST /api/position/advise`（2026-08-22 新增，同日补充杠杆）：body `{symbol, interval, direction('long'|'short'), entry, stop?, qty?, leverage?(1~200), openedAt?(ms)}` → `{price, pnlPct, unrealizedR, mfeR, barsHeld, levels{suggestedStop,beTrigger,trailStop,liqPrice}, items[{level(ok|info|warn|danger),text}], note}`。规则化仓位建议：顺势/逆势检查（vs 当前评分）、止损建议（PLAN_GEOMETRY 的 stopw×ATR）、+beR 减半仓+保本提醒、剩余半仓跟踪止盈位（需 openedAt，自持仓期 MFE 回撤 trail R）、时间退出窗口提醒、名义/保证金/风险金额（需 qty；有杠杆时按 entry/lev 算保证金与占保证金比例）、**强平风险**（需 leverage>1：隔离保证金近似强平价 = entry×(1∓1/lev)，止损越过强平价→danger"先被强平"，止损距离≥强平距离 80%→warn 插针缓冲警告）、顺方向最近关键位止盈参考。走 kline_cache 400 根 + full_analysis，校验：stop 方向合法性 400、leverage 范围 422
+- **无实时行情 WS**（2026-08-22 起删除）：数据统一走手动刷新 / 5 分钟自动刷新
+- **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`（扫流动性事件：side+outcome reclaimed/broken）、`indicators.cvd[]`（累计主动买卖差，来自 K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`patterns{candles[],charts[]}`、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias,cvdDiv}],alignment}`、`summary.tradePlan{direction,entry,stop,target1(null=跟踪止盈),beTrigger,beR,targetR(null),scaleOut,trailR,stopAtr,depthAtr,texitBars,fillBars,rr(null=跟踪),note}`——**几何按周期分化**（PLAN_GEOMETRY）：1h 0.75×ATR 回踩/2.5×ATR 止损/+0.1R 减半+保本/目标 0.75R/96 根退出（保本优先）；4h 0.75/1.2/+0.5R 减半保本/0.5R 跟踪止盈无固定目标/48 根退出/18 根成交窗口；1d 0.75/1.5/0.5R/0.5R 跟踪/24/9；1w 0.75/1.5/0.5R/0.75R 跟踪/24/8（**PLAN_THRESHOLD**：4h/1d/1w=|score|≥10、1h=25，2026-08-22 第 11 轮校准，见 §9 第 11 轮）
 
 ## 5. 当前进度
 
 ### ✅ 后端（backend/）——已完成并验证通过
-- 全部文件就绪：`main.py, config.py, services/{binance.py, analysis/{swings,smc,indicators,volume,decision}.py}, routers/{symbols,analysis,derivatives}.py, tests/{test_smc.py, verify_api.py}`
-- venv 在 `backend/.venv`，启动：`.\.venv\Scripts\python.exe main.py`
+- 全部文件就绪：`main.py, config.py, services/{binance.py, gateio.py, kline_cache.py, analysis/{swings,smc,indicators,volume,decision}.py}, routers/{symbols,analysis,derivatives,backtest,calendar,position}.py, tests/{test_smc.py, verify_api.py, backtest_decision.py, plan_sweep*.py, profit_sweep.py, profit_sweep2.py, profit2_*.py, profit_eval.py, loso_validation.py}`
+- venv 在 `backend/.venv`（本机 D:\Work\Coin 已用 `py -3.13 -m venv .venv` 重建并装好 requirements.txt），启动：`.\.venv\Scripts\python.exe main.py`
 - 验证结果：SMC 引擎单测通过（BOS/OB/FVG 识别正确）；/api/analysis BTC/ETH/SOL 均 200（BTC 1h: score=22 bullish trending，OB=10/FVG=10/pools=8）；边界校验 400 正常
 - **failover 已按用户要求实现**（官方域名优先，失败才走镜像）：`services/binance.py` 主源 4s 短超时 → 失败标记主机冷却 300s（后续请求快速短路）→ 仅 klines/exchangeInfo 回退镜像；合约专属接口无镜像→路由层置 null。实测：首次请求 6s（含探测），冷却期内 1.8s
 
 ### ✅ 前端（frontend/）——已完成，构建与联调通过
-- 全部文件就绪：`src/{main.tsx, App.tsx, App.css, types.ts, vite-env.d.ts, api/client.ts, utils/format.ts, ws/binanceWs.ts, components/{Header,SymbolSearch,ChartPanel,smcOverlays.ts,DecisionCard,DerivativesPanel,VolumeProfilePanel}.tsx}` + `tools/dns-override.cjs`
+- 全部文件就绪：`src/{main.tsx, App.tsx, App.css, types.ts, vite-env.d.ts, api/client.ts, utils/format.ts, components/{Header,SymbolSearch,ChartPanel,smcOverlays.ts,DecisionCard,TradePlanCard,PositionPanel,DerivativesPanel,VolumeProfilePanel,CalendarPanel,MtfBar,SourceHint}.tsx, utils/alerts.ts}` + `tools/dns-override.cjs`（`src/ws/binanceWs.ts` 已随实时推送模式一并删除）
+- **我的仓位面板**（2026-08-22 新增）：`components/PositionPanel.tsx`——输入方向/入场价/止损(可选)/数量(可选)/开仓时间(可选)，POST /api/position/advise 获取规则化建议（顺势检查、止损建议、+0.5R 减半保本提醒、跟踪止盈位、时间退出、名义风险金额）；仓位按 symbol 持久化 localStorage `coinlens.position`，数据刷新时自动重新分析
 - `npm.cmd run build` 通过（tsc 零错误）；dev server :5173 全模块编译 200；`/api` 代理到后端验证可用
 - **klinecharts 10.0.2 API 已对照 .d.ts 核对修正**，与 v9 差异点（后续维护必读）：
   - 数据只能通过 `chart.setDataLoader({getBars, subscribeBar, unsubscribeBar})` 喂入，`applyNewData/updateData` 已删除
-  - `getBars({type: 'init'|'forward'|'backward', callback})`：init 首次拉取；forward/backward 为滚动分页（MVP 返回空+more=false，即无历史翻页）
-  - 实时推送走 `subscribeBar({callback})`，图表在 init 完成后自动调用、symbol/period 变化时自动 unsubscribe——**WS 生命周期由图表管理**，App 只通过回调感知（防抖刷新 analysis）
+  - `getBars({type: 'init'|'forward'|'backward', timestamp, callback})`：init 首次拉取；**forward=向左滚动加载更早历史**（timestamp=当前最旧一根，返回数据前插，endTime=timestamp-1 拉其之前一页，见 §4 /api/klines）；backward=加载更新数据（刷新模式不用，返回空）；init 的 callback 必须传 `{forward:true}`，否则两个方向的分页都被禁用
+  - `subscribeBar({callback})` 在 init 完成后自动调用——现在只保存 callback 供 App 刷新时 `syncBars` 用，不再订阅外部 WS；symbol/period 变化自动 unsubscribe
   - `createIndicator(value, isStack)` 只有两个参数，pane 用 value.paneId 指定（不存在则自动建 pane，如 RSI_PANE）；内置 EMA/RSI/VOL 直接覆盖 calcParams 即可（EMA [20,50,200]、RSI [14]）
   - KLineData 字段是 `timestamp`（不是 time）；自定义 overlay 用 `registerOverlay` + `createPointFigures` 返回 Figure 数组（type: rect/line/text + attrs + styles）
   - 内置 `simpleTag` 用于流动性池/均衡位水平线（带 Y 轴价格标签）；自注册 `smcRect`（OB/FVG 矩形延伸至右缘）与 `smcText`（BOS/CHoCH 标注）
-- 图表数据流：symbol/interval 变化 → setPeriod+setSymbol → loader.getBars 拉 analysis → onAnalysis 上报 App → overlays 按 groupId 重建；新 K 线 → App 防抖 3s 刷新 analysis（仅 overlays/面板，K 线本体由 WS 推送）
-- **WS 断开时的 60s 轮询降级**（用户要求）：App 监听 wsStatus==='closed' → 每 60s refreshAnalysis() 并通过 `chartRef.pushBar(最后一根K线)` 原地更新图表（`_addData` update 语义：时间戳相等则更新、更大则追加，不重置视图）；WS 恢复自动切回推送。Header 状态点显示"轮询 60s"（琥珀色）
+- 图表数据流：symbol/interval 变化 → setPeriod+setSymbol → loader.getBars 拉 analysis → onAnalysis 上报 App → overlays 按 groupId 重建；刷新（手动/5min 自动）→ App 重拉 analysis → `chartRef.syncBars(尾部K线)` 原地同步（`_addData` 语义：时间戳相等→更新、更大→追加、更旧→忽略，不重置视图）
+- **数据模式（2026-08-22，用户要求）**：即使能连上实时 WS 也不使用实时推送。Header 提供"刷新"按钮 + "自动 5min"开关（localStorage `coinlens.autoRefresh` 持久化，默认开）+ "更新于 HH:MM:SS"时间戳；刷新时一次性重拉 analysis + derivatives + backtest（原 derivatives 30s 轮询、WS 断开 60s 轮询降级均已移除）
 - **数据来源 tooltip**：`components/SourceHint.tsx`，面板标题旁问号 hover 显示来源说明+可点击网页链接（Coinglass 持仓量/资金费率/多空比、币安合约盘、TradingView）；derivatives 全 null 时空态里也内嵌链接
 
 ### 🔧 npm 网络问题的解法（重要）
 本机企业 DNS 把 `registry.npmjs.org`/`registry.npmmirror.com` 劫持到 127.0.0.1（黑洞），导致 npm 静默失败；Zscaler 代理(127.0.0.1:9000)也封 registry，但**直连真实 IP 可通**（DNS 层劫持、IP 层未封）。
 解决：`frontend/tools/dns-override.cjs`（Node `--require` 钩子，仅对当前进程把两个 registry 域名映射回真实 IP），用法：
 ```powershell
-$env:NODE_OPTIONS='--require C:\dev\Coin\frontend\tools\dns-override.cjs'; npm.cmd install
+$env:NODE_OPTIONS='--require D:\Work\Coin\frontend\tools\dns-override.cjs'; npm.cmd install
 ```
 `start-frontend.ps1` 已内置。若未来 npm 报 ECONNREFUSED，先确认该钩子仍生效（IP 可能变化：npmmirror 用 223.5.5.5 解析、npmjs 用 8.8.8.8 解析后更新 cjs 里的 MAP）。
+
+**本机（D:\Work\Coin，2026-08-21）运行环境说明**：
+- node/npm 不在系统 PATH，Node v22.14.0 位于 `D:\360se6\Application\components\Node\`（含 npm.cmd）；运行前端命令前先 `$env:Path = "D:\360se6\Application\components\Node;$env:Path"`
+- Python 用 `py -3.13`（D:\Users\Administrator\AppData\Local\Programs\Python\Python313）；backend/.venv 已于本机用 3.13 重建并装好依赖
+- pip 在本网络下有间歇性 RST 重试但能装完；npm install 走 dns-override 钩子正常（72 包/34s）
+- 首次在本机跑通：后端 :8000 / 前端 :5173 全部 200，analysis 链路验证 OK（BTC 1h score=60 bullish）
 
 ## 6. 网络环境实测结论（重要）
 
@@ -100,12 +112,23 @@ $env:NODE_OPTIONS='--require C:\dev\Coin\frontend\tools\dns-override.cjs'; npm.c
 5. ~~前后端联调~~ ✅（/api 代理链路验证：health/analysis/derivatives 全通；首次 analysis 6s 含 failover 探测，冷却后 1.3s）
 6. ~~启动脚本~~ ✅（start-backend.ps1 / start-frontend.ps1）
 7. ~~用户浏览器人工验收~~ ✅（用户反馈"UI 不错"）
-8. ~~WS 断开 60s 轮询降级 + 数据来源 tooltip~~ ✅（见 §5 前端章节）
+8. ~~WS 断开 60s 轮询降级 + 数据来源 tooltip~~ ✅（已被 2026-08-22 数据模式取代：实时推送/轮询降级全部移除，统一手动+5min 自动刷新；数据来源 tooltip 保留）
 9. ~~P0/P1/P2 分析策略增强全部完成~~ ✅（见 §8）
-10. ~~决策引擎回测校准（7 轮循环，见 §9）~~ ✅（引擎 v3：CVD 共振组件、零权重负贡献组件、可执行保本管理计划）
-11. ~~用户浏览器验收增强版 UI~~（部分：用户早期反馈"UI 不错"；增强版待刷新 http://localhost:5173 复核——多周期条、交易计划卡含保本移损行与回测统计、期权卡、CVD 副图、动态 POC 线、预警铃铛）
+10. ~~决策引擎回测校准（10 轮循环，见 §9）~~ ✅（引擎 v3：CVD 共振组件、零权重负贡献组件、可执行保本管理计划；第 10 轮按"利润优先"重校 4h/1d 并移除 15m）
+11. ~~用户浏览器验收增强版 UI~~（部分：用户早期反馈"UI 不错"；增强版待刷新 http://localhost:5173 复核——多周期条、交易计划卡含保本移损行与回测统计、期权卡、CVD 副图、动态 POC 线、预警铃铛、左上角"加载更多历史"按钮、**我的仓位面板**）
 12. ~~提交首次 git commit~~ ✅（2026-08-21 `8ca7bd7`，62 文件：后端+前端+测试+文档+启动脚本；.venv/node_modules/dist/缓存已忽略）
-13. 已知限制（后续迭代）：a) 滚动无历史分页（getBars forward/backward 返回空）；b) 轮询模式下新 K 线最长延迟 60s（可按 interval 动态调整轮询周期）；c) 图表形态识别是启发式（双顶/头肩/三角），置信度仅供参考；d) 事件日历为本地手动维护
+13. 已知限制（后续迭代）：a) ~~滚动无历史分页~~ ✅（2026-08-21 已实现，2026-08-22 修正语义并加按钮：klinecharts 左移加载是 **type='forward'**（timestamp=最旧一根、返回数据前插）而非 backward；init callback 的 more 必须传 `{forward:true}` 否则两个方向的分页都被禁用——这是上一版"左移不加载"的根因。图表左上角新增「⟵ 加载更多历史」按钮（scrollToDataIndex(0) 触发库内部分页），滚动到最左缘也会自动加载，每页 500 根；历史 K 线走 kline_cache 磁盘缓存，回测预热过的窗口翻页 0.03s）；b) ~~轮询延迟~~（已被 2026-08-22 数据模式取代：无实时推送，最长延迟=自动刷新间隔 5min）；c) 图表形态识别是启发式（双顶/头肩/三角），置信度仅供参考；d) 事件日历为本地手动维护；e) **策略优化已终止**（第 11b 轮，结论见 §9——生产配置固化，不再调参）；后续若恢复优化，方向为加入美股/加密相关标的（MSTR/COIN/NDX，Yahoo/Stooq 数据源已探测可达）
+
+### 2026-08-22 历史数据与回测采样增强（第三轮）
+- **K 线本地磁盘缓存**（用户要求："以前的数据加载过之后是不会变化了"）：`services/kline_cache.py`，SQLite（backend/data/cache/klines.db，WAL，PK=symbol+interval+ts）。请求 `limit` 根、终点 `end_time` 的窗口时：先查缓存并做**连续性检测**（顶部紧邻 end_time、内部间隔恒等于 interval 步长），全覆盖则直接返回；否则并发 4 路向币安分页拉缺失段（每页 1000 根按时间窗平铺，页间无重叠/空洞）→ 入库 → 重读合并窗口。end_time=None（最新）时顶页永远实拉（新 K 线会变）并回种缓存。实测：同参数 4.0s→0.036s；回测预热后图表翻页 0.03s。注意：缓存不区分合约/现货源，冲突时后写覆盖（价差极小，可接受）
+- **回测采样窗口扩到 2 年**（用户要求"起码要 2 年内的数据去采样"；此前 limit≤1000，1h 只有 ~25 天）：`/api/backtest` 固定拉最近 2 年（15m≈70k/1h≈17.5k/4h≈4.4k/1d≈730 根，limit 参数废弃、前端已同步去掉）。实测 BTC 1h：样本 390→17,302，首拉 14.5s（18 页并发）/缓存后 1.5s；ETH 15m 首拉 46s（70 页）/缓存后 5.5s（纯计算）。2 年大样本 IC≈0.02、胜率≈52%——与 §9 "技术面方向预测上限 ~60%" 的诚实结论一致
+- **图表左移分页修复 + 按钮**：见 13a。klinecharts v10 语义勘误（重要，曾搞反）：`forward`=加载更早历史（前插，滚动到最左缘触发）、`backward`=加载更新数据（后插，滚动到最右缘触发）；`callback(data, more)` 的 more 传 false 会把两个方向全关掉
+
+### 2026-08-21 用户体验修复（第二轮）
+- **流动性池标注**：`$$$已扫` 改为 `买侧流动性·已扫 / 卖侧流动性`（$$$ 是 SMC 圈"挂在 swing 高低点的挂单流动性"黑话，用户反馈看不懂）
+- **图表历史分页**：见上 13a；初始仍加载 500 根（1h≈21 天），向左滚动自动加载更早历史
+- **SourceHint tooltip**：原 absolute 定位在 `.sidebar{overflow-y:auto}` 内被裁剪（视觉上像被 K 线图盖住）→ 改为 React Portal + `position:fixed` + z-index 1000，自动视口内夹紧（左右贴边、底部翻转向上），150ms 延迟关闭使链接可点击
+- **币安官方 API 连通性复测**：fapi/api.binance.com 返回 HTTP 451（连通但被币安区域封锁，出口 IP 所在地区受限），镜像 data-api.binance.vision 正常——结论不变：本网络只能走镜像（现货数据），合约专属接口仍不可达
 
 ## 8. 分析/策略增强 backlog（P0/P1/P2 全部完成 ✅）
 
@@ -168,6 +191,33 @@ $env:NODE_OPTIONS='--require C:\dev\Coin\frontend\tools\dns-override.cjs'; npm.c
 - **抽稀独立性校验（OOS）**：1/1（~16h）82.2% → 1/4（~2.6天）87.2% → 1/8（~5.3天）86.5% → 1/16（~10.5天）79.4%（n=34）——去除自相关后仍稳定在 ~80-87% 区间，结论对采样密度不敏感
 - 方向门控 1W 抽稀后 57.5~60.1% 稳定；150 点时"OOS 88.9%"系小样本偏乐观（72 个成交），大样本中心估计修正为 **~82%**；产品 UI 文案已同步改为 "~82%（抽稀 79~87%）"
 - 大样本下各组件方向 IC 全部 |IC|<0.16、胜率 48-53%——再次确认技术面方向预测上限 ~60% 的诚实结论
+
+### 第 11 轮：多轮循环优化（2026-08-22 凌晨，用户要求"7 小时循环、利润优先、4h/1d/1w、防过拟合、无法提升则说明原因并停止"）
+- **工具链**：`tests/profit_sweep2.py`（多轮框架：扩展窗口采样+记录缓存+坐标下降+门控扫描+LOSO）+ `profit2_sens/r3/r4/r5/r5b/cap.py`（各轮定向实验）。日志 `tests/p2_*.log`。**数据窗口扩展**：4h×3 年（6570 根）/1d×4 年（1460）/1w×10 年上限（BTC/ETH 471、SOL 315 根——上市限制）；**1w 为新增周期**（前后端全链路支持，图表 Period type='week'）；MTF 上下文只用已收盘高周期 K 线
+- **R0 基线**（扩展窗口，旧几何）：4h 盲测 B+C +115.4R / 1d +64.0R / 1w +3.0R（4h 几何在周线失效）
+- **R1 门控**（9 种：score30/35、conf、noexp、trend、range、align、zone）：三周期全部降低总利润 → 拒绝；1d+1w 上下文变体更差（+51 vs +64R）→ 拒绝
+- **R2 坐标下降**（depth/stop/be/tgt/texit/trail 六轴两轮）：4h 找到"无限目标+跟踪止盈"族（+178.5R）；**R3 定向验证** trail=0.5/stop=1.2（A+B 单调趋势+盲测确认 4h +285.8R；trail 0.35 变差确认内点最优非边界假象）；敏感性表格显示参数面平滑平台（tgt/texit 平坦——trail 生效后目标位不起作用）
+- **R4 成交窗口**：fill×1.5 盲测提升（4h +317.4R / 1d +85.5R，机制=更多同质成交）
+- **R5/R5b 计划生成阈值**（25→20→15→10）：单调改善，边际交易（低分段）单独 EV +0.19~0.41R——**优势在入场+管理执行层而非信号强度**；1w 的 BTC 转亏问题被低阈值修复（+2.9→+34.8R）
+- **容量约束模拟**（profit2_cap.py，单仓位/币种串行执行=个人账户可实现口径）：th=10 三周期 A+B 与盲测一致胜出：**4h +288.1R（胜率 86.6%、EV +0.315R、DD 5.0R）、1d +46.6R（86.7%、+0.239R、DD 2.7R）、1w +21.2R（95.7%、+0.461R、DD 1.0R）**，分币种全部为正；无约束总利润（4h +471.9R）会重复计重叠仓位，已弃用该口径
+- **生产落地**：`PLAN_GEOMETRY` 4h=(0.75, 1.2, 0.5R 减半保本, 无固定目标, 0.5R 跟踪止盈, 48 根退出, 18 根成交窗口)；1d=(0.75, 1.5, 0.5R, trail 0.5R, 24, 9)；1w=(0.75, 1.5, 0.5R, trail 0.75R, 24, 8)；**PLAN_THRESHOLD** 4h/1d/1w=10、1h=25（不变）；1h 几何保持第 9 轮保本优先版。TradePlanCard 按周期显示跟踪止盈规则、撤单时限与容量口径回测数据；tradePlan 新增 trailR/fillBars，target1 可为 null（跟踪止盈无固定目标）
+- **诚实提示（UI tooltip 已标注）**：信号方向胜率仍 ~50%（三周期一致），利润全部来自执行层；1w 盲测仅 46 笔；1w 回测记录 warmup=170（无 EMA200）与生产 1w 全窗口分析有二阶成分差异；未计手续费/滑点
+- **停止原因（平台期认定）**：① 门控维度两轮穷尽（全部负贡献）；② 几何六轴收敛（内点最优，更紧参数=追噪声）；③ 阈值维度全扫描到 10（再低=方向噪声）；④ 方向预测上限 ~50-60% 为基本面约束（多轮验证）；⑤ 盲测折多重比较已多——继续"提升"大概率是拟合噪声。综上：在现有数据与防过拟合协议下已无法诚实提升，停止
+
+### 第 11b 轮：扩展样本验证（已按用户要求取消）与优化正式终止（2026-08-22）
+- **用户对 1w 46 笔盲测的质疑**（合理）：样本 <100 则数据不可靠。成因：① 币安周线数据上限（BTC/ETH 471 根、SOL 315 根——2017/2020 上市）；② 容量约束串行执行（周线一仓占坑最长 24 周≈5.5 个月）；③ 盲测仅占时序后 60%（无约束口径其实 201 笔）。**1d/1w 总利润低于 4h 的成因**：总利润=EV×笔数，EV 其实 1w 最高（+0.46R>4h +0.32R），差距全在 K 线根数（4h 6570 vs 1d 1460 vs 1w 471）与机会频率——提高高周期利润的杠杆是增加标的数而非改参数
+- **11b 尝试与取消**：方案=几何只用 BTC/ETH/SOL 调参，新增 10 个长历史主流币（BNB/XRP/ADA/DOGE/LINK/LTC/DOT/TRX/ETC/BCH）做纯样本外验证（工具 `tests/profit2_oos.py` 已写、跑了一半）——**用户否决**：不同币走势完全不一样，新币验证对 BTC/ETH/SOL 交易无意义。已停止（镜像限流导致 LINK/LTC 拉取失败也是实际问题）
+- **后续方向（用户提出，未排期）**：加入美股或与加密相关的标的（MSTR/COIN/NDX 等）扩充样本与市场维度。数据源实测（2026-08-22）：`query1.finance.yahoo.com` 可达但**连续请求会被限流**（先 404 后连接重置，需加间隔/重试/换 query2 主机）；`stooq.com` CSV 接口稳定可达。落地时需做限流控制与独立适配层
+- **最终结论固化（生产配置即第 11 轮结果，不再迭代）**：PLAN_GEOMETRY 1h=(0.75,2.5,0.1R,0.75R,96)/4h=(0.75,1.2,0.5R,trail0.5,48,fill18)/1d=(0.75,1.5,0.5R,trail0.5,24,fill9)/1w=(0.75,1.5,0.5R,trail0.75,24,fill8)；PLAN_THRESHOLD 4h/1d/1w=10、1h=25；容量口径盲测 4h +288.1R/1d +46.6R/1w +21.2R（1w 样本不足是已声明的局限）。**新增功能替代继续优化**：仓位建议（POST /api/position/advise + PositionPanel）把校准几何用于实盘持仓管理——这是回测结论向用户价值转化的路径
+
+### 第 10 轮：利润优先重校准 4h/1d（2026-08-22，用户要求"利润第一、胜率其次，不做超短线/日内"）
+- **工具**：`tests/profit_sweep.py`（144 格网格：depth{0.75,1.0}×stop{2.0,2.5,3.0}×mgmt{plain,be05,scale05,scale10}×tgt{1.5,2.0,3.0}×texit{24,96}；**目标函数=总利润（成交单 R 值之和）优先，其次 EV、胜率**；约束 filled≥120(4h)/30(1d)、成交率≥25%、EV≥+0.05R）+ `tests/profit_eval.py`（补充定向评估）。日志 `tests/profit_4h.log`、`tests/profit_1d.log`。数据走 kline_cache 2 年窗口；**MTF 上下文只用已收盘的更高周期 K 线**（消除半根 K 线前视）
+- **15m 周期同轮移除**（前端 INTERVALS / 后端 ALLOWED_INTERVALS、MTF_MAP、TWO_YEARS_BARS、STEP_MS 全部清理，interval=15m 返回 400）
+- **4h 结果**（2829 决策点，2024-11~2026-08）：利润最优族 = depth 1.0 / stop 2.0 / **scale05**（+0.5R 减半+保本）/ tgt 3R / texit 24。走样本盲测 **B +42.4R（胜率 76.3%，EV +0.139R）/ C +38.1R（胜率 80.6%，EV +0.132R）**，均高于基线（98% 非亏损版 +32.2/+33.7R，EV +0.10R）；抽稀 1/2→83.5%、1/4→85.0% 稳定；盲测 C 分币种 BTC 83.5%/ETH 82.2%/SOL 75.6% 全正
+- **1d 结果**（480 决策点，样本薄）：总利润最大化的"裸止损 3R 目标"格（plain tgt3 te96）样本内 +65.8R 但盲测 C **-12.4R**（20 笔、胜率 20%）→ 按协议拒绝（彩票型参数）。稳定族 scale05/stop2.0 补充盲测（profit_eval.py）：**B +9.2R（胜率 80.4%，EV +0.201R）/ C +10.0R（胜率 100%，EV +0.357R）**，三币种 B+C 全正（BTC 87%/ETH 85%/SOL 92%）——约为基线利润的 3 倍
+- **LOSO 提示**：留一币种时"总利润最大化"选择器不稳定（2 币种子集会选中 plain 彩票格，盲测 BTC/SOL 转亏）；scale05 族本身跨币种、跨折、跨周期稳定——**生产采用统一 swing 几何**而非逐币种选择
+- **生产选型（PLAN_GEOMETRY 按周期分化）**：1h 保留第 9 轮 be10_scale（保本优先 98%）；**4h/1d 统一 depth 1.0 / stop 2.0 / +0.5R 减半+保本 / 目标 3R / texit 24 根(4h)、96 根(1d)**，rr=1.75。TradePlanCard 按 interval 显示几何与回测口径（4h/1d 文案=利润优先盲测数据）
+- 诚实提示（UI tooltip 已标注）：未计手续费/滑点（净 EV 再减 0.03~0.06R）；1d 盲测折仅 30~80 笔成交；激进高利润格盲测转亏已被拒绝——总利润上限受"参数稳健性"约束
 
 ### 第 9 轮：分批止盈边界外移，非亏损率 ~98%（2026-08-21，用户要求向 99% 推进）
 - **先验数学**：纯限价成交下 P(全损) ≥ f/(1+f)（f=保本触发 R 数），99% 需 f≈0.01 → EV 塌向 0。合法的边界外移手段 = **分批止盈**（+f×R 出半仓锁利润 + 保本，剩余仓位跑目标）

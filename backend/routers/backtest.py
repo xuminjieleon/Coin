@@ -1,13 +1,26 @@
-"""Walk-forward backtest of the decision score: IC and directional hit rate."""
+"""Walk-forward backtest of the decision score: IC and directional hit rate.
+
+Sampling window: the most recent ~2 years per interval (15m≈70k, 1h≈17.5k,
+4h≈4.4k, 1d≈730 bars), fetched through the local kline cache — first pull
+pages from Binance, afterwards served fully from disk.
+"""
 import numpy as np
 from fastapi import APIRouter, HTTPException, Query
 
-from routers.analysis import ALLOWED_INTERVALS, _klines_df
+from routers.analysis import ALLOWED_INTERVALS
+from services import kline_cache
 from services.analysis import indicators, smc, swings
 
 router = APIRouter(prefix="/api")
 
 WARMUP = 210  # ema200 + rolling windows
+
+TWO_YEARS_BARS = {
+    "1h": 17_520,
+    "4h": 4_380,
+    "1d": 730,
+    "1w": 312,  # 6 years — 2y of weekly bars is too thin for a backtest
+}
 
 
 def _rank(x: np.ndarray) -> np.ndarray:
@@ -31,16 +44,16 @@ def _spearman(a: np.ndarray, b: np.ndarray) -> float:
 async def get_backtest(
     symbol: str = Query(...),
     interval: str = Query(default="1h"),
-    limit: int = Query(default=600),
+    limit: int = Query(default=0),  # deprecated: window is now fixed at ~2 years
     horizon: int = Query(default=8),
 ):
     if interval not in ALLOWED_INTERVALS:
         raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(ALLOWED_INTERVALS)}")
-    limit = max(300, min(1000, limit))
     horizon = max(2, min(48, horizon))
     symbol = symbol.upper()
 
-    df = await _klines_df(symbol, interval, limit)
+    rows = await kline_cache.get_klines(symbol, interval, TWO_YEARS_BARS[interval])
+    df = kline_cache.rows_to_df(rows)
     n = len(df)
     if n <= WARMUP + horizon + 30:
         raise HTTPException(status_code=400, detail="not enough candles for backtest")

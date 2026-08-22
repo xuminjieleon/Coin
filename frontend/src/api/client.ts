@@ -2,6 +2,19 @@ const API_BASE: string = import.meta.env.VITE_API_BASE ?? 'http://localhost:8000
 
 async function request<T>(path: string): Promise<T> {
   const resp = await fetch(`${API_BASE}${path}`)
+  return handleResponse<T>(resp)
+}
+
+async function postRequest<T>(path: string, body: unknown): Promise<T> {
+  const resp = await fetch(`${API_BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  return handleResponse<T>(resp)
+}
+
+async function handleResponse<T>(resp: Response): Promise<T> {
   if (!resp.ok) {
     let detail = `HTTP ${resp.status}`
     try {
@@ -141,13 +154,18 @@ export interface TradePlan {
   direction: 'long' | 'short'
   entry: number
   stop: number
-  target1: number
+  target1: number | null
   target2?: number | null
   beTrigger?: number
   beR?: number
-  targetR?: number
+  targetR?: number | null
   scaleOut?: boolean
-  rr: number
+  trailR?: number | null
+  stopAtr?: number
+  depthAtr?: number
+  texitBars?: number
+  fillBars?: number
+  rr: number | null
   note: string
 }
 
@@ -305,16 +323,75 @@ export function fetchAnalysis(symbol: string, interval: string, limit = 500): Pr
   )
 }
 
+export interface KlinesResponse {
+  symbol: string
+  interval: string
+  candles: Candle[]
+}
+
+/** Raw klines for chart history paging (older bars before `endTime`). */
+export function fetchKlines(
+  symbol: string,
+  interval: string,
+  limit = 500,
+  endTime?: number,
+): Promise<KlinesResponse> {
+  const end = endTime != null ? `&endTime=${endTime}` : ''
+  return request<KlinesResponse>(
+    `/api/klines?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}${end}`,
+  )
+}
+
 export function fetchDerivatives(symbol: string): Promise<Derivatives> {
   return request<Derivatives>(`/api/derivatives?symbol=${encodeURIComponent(symbol)}`)
 }
 
 export function fetchBacktest(symbol: string, interval: string): Promise<BacktestResult> {
   return request<BacktestResult>(
-    `/api/backtest?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=600`,
+    `/api/backtest?symbol=${encodeURIComponent(symbol)}&interval=${interval}`,
   )
 }
 
 export function fetchCalendar(): Promise<CalendarResponse> {
   return request<CalendarResponse>('/api/calendar')
+}
+
+// ---- Position advisor ----
+
+export interface PositionAdviceItem {
+  level: 'ok' | 'info' | 'warn' | 'danger'
+  text: string
+}
+
+export interface PositionAdvice {
+  symbol: string
+  interval: string
+  price: number
+  pnlPct: number
+  unrealizedR: number
+  mfeR: number | null
+  barsHeld: number | null
+  levels: {
+    suggestedStop: number
+    beTrigger: number
+    trailStop: number | null
+    liqPrice: number | null
+  }
+  items: PositionAdviceItem[]
+  note: string
+}
+
+export interface PositionInput {
+  symbol: string
+  interval: string
+  direction: 'long' | 'short'
+  entry: number
+  stop?: number | null
+  qty?: number | null
+  leverage?: number | null
+  openedAt?: number | null
+}
+
+export function advisePosition(input: PositionInput): Promise<PositionAdvice> {
+  return postRequest<PositionAdvice>('/api/position/advise', input)
 }

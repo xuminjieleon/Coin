@@ -112,7 +112,7 @@ export function buildOverlaySpecs(
       price: pool.price,
       color,
       dashed: pool.swept,
-      text: `$$$${pool.swept ? ' 已扫' : ''}`,
+      text: `${pool.type === 'buy_side' ? '买侧' : '卖侧'}流动性${pool.swept ? '·已扫' : ''}`,
     })
   }
 

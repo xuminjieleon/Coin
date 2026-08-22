@@ -4,19 +4,19 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from routers.derivatives import compute_oi_change_pct
-from services import binance
+from services import binance, kline_cache
 from services.analysis import decision, engine
 
 router = APIRouter(prefix="/api")
 
-ALLOWED_INTERVALS = {"15m", "1h", "4h", "1d"}
+ALLOWED_INTERVALS = {"1h", "4h", "1d", "1w"}
 
 # Higher timeframes used for MTF resonance per current interval.
 MTF_MAP = {
-    "15m": ["1h", "4h"],
     "1h": ["4h", "1d"],
     "4h": ["1d"],
     "1d": [],
+    "1w": [],
 }
 
 
@@ -101,6 +101,7 @@ async def _mtf_context(symbol: str, interval: str) -> dict:
                 cvd_div=full["cvdDivergence"],
                 price_change_pct=price_change_pct,
                 atr=next((v for v in reversed(full["indicators"]["atr14"]) if v is not None), None),
+                interval=itv,
             )
             return {
                 "interval": itv,
@@ -124,6 +125,35 @@ async def _mtf_context(symbol: str, interval: str) -> dict:
     else:
         alignment = "mixed"
     return {"list": summaries, "alignment": alignment}
+
+
+@router.get("/klines")
+async def get_klines(
+    symbol: str = Query(...),
+    interval: str = Query(default="1h"),
+    limit: int = Query(default=500),
+    endTime: int | None = Query(default=None),
+):
+    """Raw klines only (no analysis) - used by the chart for backward history
+    paging. Served from the immutable-bar local cache when covered."""
+    if interval not in ALLOWED_INTERVALS:
+        raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(ALLOWED_INTERVALS)}")
+    if not 100 <= limit <= 1000:
+        raise HTTPException(status_code=400, detail="limit must be between 100 and 1000")
+    symbol = symbol.upper()
+    rows = await kline_cache.get_klines(symbol, interval, limit, end_time=endTime)
+    candles = [
+        {
+            "time": int(r[0]),
+            "open": float(r[1]),
+            "high": float(r[2]),
+            "low": float(r[3]),
+            "close": float(r[4]),
+            "volume": float(r[5]),
+        }
+        for r in rows
+    ]
+    return {"symbol": symbol, "interval": interval, "candles": candles}
 
 
 @router.get("/analysis")
@@ -169,6 +199,7 @@ async def get_analysis(
         cvd_div=full["cvdDivergence"],
         mtf=mtf["list"],
         atr=next((v for v in reversed(full["indicators"]["atr14"]) if v is not None), None),
+        interval=interval,
     )
 
     candles = [

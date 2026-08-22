@@ -10,6 +10,15 @@ frontend/tsconfig.tsbuildinfo
 
 # 回测缓存（按引擎源码哈希自动重建）
 backend/tests/_bt_cache.pkl
+backend/tests/_profit_cache.pkl
+backend/tests/_profit2_cache_*.pkl
+backend/tests/_profit2_oos_cache_*.pkl
+
+# 回测运行日志（结论已固化进 AGENTS.md，可由工具重跑）
+backend/tests/*.log
+
+# K 线本地磁盘缓存（不可变历史数据，自动重建）
+backend/data/cache/
 
 # 本地环境
 *.log.tmp

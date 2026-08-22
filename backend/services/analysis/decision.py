@@ -5,17 +5,51 @@ Calibration notes:
   - Direction: no technical component predicts 1W direction above ~61% on the
     2y x 3-symbol sample; the composite keeps regime-differentiated weights
     (CVD moderate, negative-IC components zeroed, still displayed).
-  - Trade plan (the validated deliverable), walk-forward calibrated in
-    tests/plan_sweep.py with 40/30/30 folds: tune A -> blind B 94.9%,
-    re-tune A+B -> blind C 91.0% non-loss rate (win + breakeven exit), EV
-    +0.15R per filled trade; C-fold thinning 90.4-91.2%, per-symbol
-    90.1-92.3%. Geometry: 0.75 ATR pullback, 1.5 ATR stop, BE at +0.25R,
-    T1 0.75R, time exit 96 bars. Timeouts marked to market (strict).
+  - Trade plan geometry per interval. Round 11 (2026-08-22, profit-first
+    multi-round loop on extended windows, tests/profit_sweep2.py):
+    4h (3y x 3 symbols, 4506 decisions): 0.75 ATR pullback, 1.2 ATR stop,
+        +0.5R scale-out+BE, runner trail 0.5R (no fixed target), texit 48,
+        order valid 18 bars. Blind B+C +317.4R (incumbent +115.4R), EV
+        +0.276R, win 84.8%, per-symbol BTC/ETH/SOL +170/+171/+177.
+    1d (4y, 1575 decisions): 0.75/1.5/0.5R, trail 0.5R, texit 24, order
+        valid 9 bars. Blind B+C +85.5R (incumbent +64.0R), EV +0.238R,
+        win 86.4%, per-symbol +55/+64/+41.
+    1w (10y-capped, 651 decisions): family inherited from 4h/1d (NOT tuned
+        on 1w - sample too thin: ~67 blind fills; BTC marginal +2.9R), fill
+        window 8 bars. Blind B+C +13.6R, EV +0.204R, win 86.6%.
+    1h unchanged: non-loss-first geometry (blind ~98% non-loss, EV +0.09R).
+    Gates tested twice (trend/range/vol/score-thresholds/conf/align/zone):
+    all REDUCE total profit under profit-first objective; base gate kept.
+    Note: 1w backtest records used warmup 170 (no EMA200) while production
+    1w analysis may include it - second-order score-composition mismatch,
+    documented. Fees/slippage NOT modeled (~maker 0.02%).
 """
 
 NEAR_PCT = 0.03  # 3% proximity for OB / FVG
 MAGNET_PCT = 0.05  # 5% proximity for liquidity pools
 FUNDING_THRESHOLD = 0.0005  # 0.05%
+
+# interval -> (depth ATR, stop ATR, BE trigger R, runner target R (None=trail
+# managed), texit bars, runner trail R (None=off), order validity bars)
+# Round 11 calibration (profit-first), see module docstring.
+PLAN_GEOMETRY = {
+    "1h": (0.75, 2.5, 0.10, 0.75, 96, None, 24),
+    "4h": (0.75, 1.2, 0.50, None, 48, 0.50, 18),
+    "1d": (0.75, 1.5, 0.50, None, 24, 0.50, 9),
+    "1w": (0.75, 1.5, 0.50, None, 24, 0.75, 8),
+}
+PLAN_DEFAULT_INTERVAL = "1h"
+
+# |score| threshold for generating a plan (per interval). Round 11: the edge
+# lives in the entry+management layer, not signal strength — looser thresholds
+# add profitable trades under capacity-constrained (serial single-position)
+# execution on 4h/1d/1w. 1h keeps the conservative high-conviction gate.
+PLAN_THRESHOLD = {
+    "1h": 25,
+    "4h": 10,
+    "1d": 10,
+    "1w": 10,
+}
 
 WEIGHTS = {
     "trending": {
@@ -60,6 +94,7 @@ def build_summary(
     cvd_div: dict | None = None,
     mtf: list[dict] | None = None,
     atr: float | None = None,
+    interval: str | None = None,
 ) -> dict:
     components: list[dict] = []  # {text, direction, weight}
 
@@ -339,6 +374,7 @@ def build_summary(
         bias=bias, score=score, price=price, smc=smc, atr=atr,
         buy_pools=buy_pools, sell_pools=sell_pools, pd_zone=pd_zone,
         high_confidence=high_confidence, confidence_dir=confidence_dir,
+        interval=interval,
     )
 
     return {
@@ -355,36 +391,24 @@ def build_summary(
 
 def _build_trade_plan(*, bias: str, score: int, price: float, smc: dict, atr: float | None,
                       buy_pools: list, sell_pools: list, pd_zone: dict,
-                      high_confidence: bool = False, confidence_dir: str | None = None) -> dict | None:
-    """Executable setup, geometry validated by walk-forward (tests/plan_sweep2.py)
-    AND leave-one-symbol-out cross-validation (tests/loso_validation.py):
-
-      pullback entry 0.75 ATR (zone edge within 0.75 ATR refines it)
-      stop           2.5  ATR
-      BE trigger     +0.10 R, scale-out: half the position exits here locking
-                     +0.05 R, stop moves to entry (breakeven management)
-      runner target  +0.75 R (remaining half)
-      time exit      96 bars (~4 days on 1h), marked to market
-
-    Validation: walk-forward blind B 98.2% / blind C 94.8% (ranging gate
-    rejected: blind EV broke the floor); all-gate LOSO blind on held-out
-    symbols BTC/ETH/SOL: 97.2% / 98.0% / 98.4% non-loss, EV +0.096/+0.075/
-    +0.069 R. In-sample 99%+ cells exist but their blind EV sits at the
-    floor -> ~98% is the honest EV-constrained ceiling. Fees/slippage are
-    NOT modeled (maker entry ~0.02%): net EV roughly +0.03~0.06 R.
-    """
+                      high_confidence: bool = False, confidence_dir: str | None = None,
+                      interval: str | None = None) -> dict | None:
+    """Executable setup; geometry per interval, see PLAN_GEOMETRY and the
+    module docstring for the walk-forward validation behind each."""
     if atr is None or atr <= 0:
         return None
+    threshold = PLAN_THRESHOLD.get(interval or PLAN_DEFAULT_INTERVAL,
+                                   PLAN_THRESHOLD[PLAN_DEFAULT_INTERVAL])
     if high_confidence and confidence_dir:
         long = confidence_dir == "bullish"
-    elif abs(score) >= 25 and bias != "neutral":
-        long = bias == "bullish"
+    elif abs(score) >= threshold:
+        long = score > 0
     else:
         return None
 
-    depth, stopw = 0.75, 2.5
-    be_frac, tgt_r = 0.10, 0.75
-    # entry: nearest quality zone edge within 0.75 ATR, else pullback
+    depth, stopw, be_frac, tgt_r, texit, trail, fill_bars = PLAN_GEOMETRY.get(
+        interval or PLAN_DEFAULT_INTERVAL, PLAN_GEOMETRY[PLAN_DEFAULT_INTERVAL])
+    # entry: nearest quality zone edge within `depth` ATR, else pullback
     if long:
         zones = [z for z in smc["orderBlocks"] + smc["fvgs"]
                  if z["type"] == "bullish" and not z["mitigated"] and z["top"] <= price]
@@ -408,24 +432,44 @@ def _build_trade_plan(*, bias: str, score: int, price: float, smc: dict, atr: fl
     risk = abs(entry - stop)
     if risk <= 0:
         return None
-    t1 = entry + tgt_r * risk if long else entry - tgt_r * risk
+    t1 = None
     be_trigger = entry + be_frac * risk if long else entry - be_frac * risk
-    note = (
-        "CVD 多周期共振方向" if high_confidence else "结构评分方向"
-    ) + (
-        "；回踩 0.75×ATR 限价入场，2.5×ATR 止损；触及 +0.1R 先出半仓锁定利润并将止损移至入场价"
-        "（保本管理），剩余半仓目标 +0.75R，96 根 K 线未触发则市价离场"
-    )
+    src = "CVD 多周期共振方向" if high_confidence else "结构评分方向"
+    if trail is not None and tgt_r is None:
+        # trail-managed runner (4h/1d/1w family)
+        note = (
+            f"{src}（|评分|≥{threshold}）；回踩 {depth}×ATR 限价入场（区域边缘更优），{stopw}×ATR 止损；"
+            f"触及 +{be_frac}R 先出半仓锁定利润并将止损移至入场价；剩余半仓不设固定目标，"
+            f"以 {trail}R 跟踪止盈（自最高盈利回撤 {trail}R 即离场），{texit} 根 K 线未离场则市价离场；"
+            f"限价单 {fill_bars} 根未成交自动撤单；建议单仓位串行执行（持仓期间忽略新信号，"
+            f"未成交挂单被新信号替换）"
+        )
+        rr = None
+    elif tgt_r is not None:
+        t1 = entry + tgt_r * risk if long else entry - tgt_r * risk
+        note = (
+            f"{src}；回踩 {depth}×ATR 限价入场，{stopw}×ATR 止损；触及 +{be_frac}R 先出半仓锁定利润并将止损移至入场价"
+            f"（保本管理），剩余半仓目标 +{tgt_r}R，{texit} 根 K 线未触发则市价离场；"
+            f"限价单 {fill_bars} 根未成交自动撤单"
+        )
+        rr = round(0.5 * be_frac + 0.5 * tgt_r, 2)
+    else:
+        return None
     return {
         "direction": "long" if long else "short",
         "entry": round(float(entry), 8),
         "stop": round(float(stop), 8),
-        "target1": round(float(t1), 8),
+        "target1": round(float(t1), 8) if t1 is not None else None,
         "target2": None,
         "beTrigger": round(float(be_trigger), 8),
         "beR": be_frac,
         "targetR": tgt_r,
         "scaleOut": True,
-        "rr": 0.43,  # blended max: 0.5*0.1R + 0.5*0.75R
+        "trailR": trail,
+        "stopAtr": stopw,
+        "depthAtr": depth,
+        "texitBars": texit,
+        "fillBars": fill_bars,
+        "rr": rr,
         "note": note,
     }

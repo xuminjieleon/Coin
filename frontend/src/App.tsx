@@ -4,6 +4,7 @@ import ChartPanel, { type ChartPanelHandle } from './components/ChartPanel'
 import MtfBar from './components/MtfBar'
 import DecisionCard from './components/DecisionCard'
 import TradePlanCard from './components/TradePlanCard'
+import PositionPanel from './components/PositionPanel'
 import DerivativesPanel from './components/DerivativesPanel'
 import VolumeProfilePanel from './components/VolumeProfilePanel'
 import CalendarPanel from './components/CalendarPanel'
@@ -15,17 +16,26 @@ import {
   type BacktestResult,
   type Derivatives,
 } from './api/client'
-import type { WsKline, WsStatus } from './ws/binanceWs'
 import { AlertEngine, pushNotification, requestNotifyPermission, type AlertMessage } from './utils/alerts'
 import { DEFAULT_INTERVAL, DEFAULT_SYMBOL, type Interval } from './types'
 
 const STORAGE_KEY = 'coinlens.symbol'
+const AUTO_REFRESH_KEY = 'coinlens.autoRefresh'
+const AUTO_REFRESH_MS = 5 * 60 * 1000
 
 function loadSymbol(): string {
   try {
     return localStorage.getItem(STORAGE_KEY) ?? DEFAULT_SYMBOL
   } catch {
     return DEFAULT_SYMBOL
+  }
+}
+
+function loadAutoRefresh(): boolean {
+  try {
+    return localStorage.getItem(AUTO_REFRESH_KEY) !== 'off'
+  } catch {
+    return true
   }
 }
 
@@ -38,13 +48,12 @@ export default function App() {
   const [derivatives, setDerivatives] = useState<Derivatives | null>(null)
   const [backtest, setBacktest] = useState<BacktestResult | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [wsStatus, setWsStatus] = useState<WsStatus>('connecting')
-  const [polling, setPolling] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [autoRefresh, setAutoRefresh] = useState<boolean>(loadAutoRefresh)
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [alertsEnabled, setAlertsEnabled] = useState(false)
   const [toasts, setToasts] = useState<AlertMessage[]>([])
   const chartRef = useRef<ChartPanelHandle>(null)
-  const analysisTimerRef = useRef<number | undefined>(undefined)
   const symbolRef = useRef(symbol)
   const intervalRef = useRef(interval)
   const alertEngineRef = useRef<AlertEngine>(new AlertEngine())
@@ -73,6 +82,7 @@ export default function App() {
     (a: AnalysisResponse) => {
       setAnalysis(a)
       setError(null)
+      setLastRefresh(new Date())
       // feed alert engine with key levels + structure events
       const engine = alertEngineRef.current
       engine.setLevels(
@@ -88,40 +98,6 @@ export default function App() {
   const handleError = useCallback((msg: string) => {
     setError(msg)
   }, [])
-
-  // Manual refresh (candle close) — chart data keeps flowing via WS subscribeBar
-  const refreshAnalysis = useCallback(async (): Promise<AnalysisResponse | null> => {
-    setLoading(true)
-    try {
-      const data = await fetchAnalysis(symbolRef.current, intervalRef.current, 500)
-      if (data.symbol === symbolRef.current && data.interval === intervalRef.current) {
-        handleAnalysis(data)
-        return data
-      }
-      return null
-    } catch (e) {
-      setError(`分析数据刷新失败：${e instanceof Error ? e.message : String(e)}`)
-      return null
-    } finally {
-      setLoading(false)
-    }
-  }, [handleAnalysis])
-
-  // New candle -> debounced analysis refresh
-  const handleWsKline = useCallback(
-    (k: WsKline) => {
-      if (!k.isNew) return
-      // price-level alerts on every update
-      const msgs = alertEngineRef.current.checkPrice(k.close, symbolRef.current)
-      emitAlerts(msgs)
-      if (analysisTimerRef.current !== undefined) window.clearTimeout(analysisTimerRef.current)
-      analysisTimerRef.current = window.setTimeout(() => {
-        analysisTimerRef.current = undefined
-        refreshAnalysis()
-      }, 3000)
-    },
-    [refreshAnalysis, emitAlerts],
-  )
 
   const loadDerivatives = useCallback(async () => {
     try {
@@ -144,6 +120,36 @@ export default function App() {
     }
   }, [])
 
+  // Unified refresh (manual button + 5-min auto): analysis, chart tail,
+  // derivatives and backtest in one pass. No real-time push.
+  const refreshData = useCallback(async () => {
+    setRefreshing(true)
+    try {
+      const data = await fetchAnalysis(symbolRef.current, intervalRef.current, 500)
+      if (data.symbol === symbolRef.current && data.interval === intervalRef.current) {
+        handleAnalysis(data)
+        chartRef.current?.syncBars(data.candles)
+        if (data.candles.length > 0) {
+          const price = data.candles[data.candles.length - 1].close
+          emitAlerts(alertEngineRef.current.checkPrice(price, data.symbol))
+        }
+      }
+    } catch (e) {
+      setError(`数据刷新失败：${e instanceof Error ? e.message : String(e)}`)
+    } finally {
+      setRefreshing(false)
+    }
+    void loadDerivatives()
+    void loadBacktest()
+  }, [handleAnalysis, loadDerivatives, loadBacktest, emitAlerts])
+
+  // Auto refresh every 5 minutes (timer restarts on symbol/interval change)
+  useEffect(() => {
+    if (!autoRefresh) return
+    const t = window.setInterval(() => void refreshData(), AUTO_REFRESH_MS)
+    return () => window.clearInterval(t)
+  }, [autoRefresh, symbol, interval, refreshData])
+
   // Reset panels + reload derivatives/backtest on symbol/interval change
   useEffect(() => {
     setAnalysis(null)
@@ -157,33 +163,17 @@ export default function App() {
     }
   }, [symbol, interval, loadDerivatives, loadBacktest])
 
-  // Poll derivatives every 30s
-  useEffect(() => {
-    const t = window.setInterval(loadDerivatives, 30_000)
-    return () => window.clearInterval(t)
-  }, [loadDerivatives])
-
-  // Polling fallback: when the WS is unreachable (blocked network), refresh
-  // chart candles + analysis every 60s via REST. Push the last candle into the
-  // chart in-place so the view does not reset.
-  useEffect(() => {
-    if (wsStatus !== 'closed') {
-      setPolling(false)
-      return
-    }
-    setPolling(true)
-    const poll = async () => {
-      const a = await refreshAnalysis()
-      if (a && a.candles.length > 0) {
-        chartRef.current?.pushBar(a.candles[a.candles.length - 1])
-        const price = a.candles[a.candles.length - 1].close
-        emitAlerts(alertEngineRef.current.checkPrice(price, a.symbol))
+  const toggleAutoRefresh = useCallback(() => {
+    setAutoRefresh((prev) => {
+      const next = !prev
+      try {
+        localStorage.setItem(AUTO_REFRESH_KEY, next ? 'on' : 'off')
+      } catch {
+        /* ignore */
       }
-    }
-    void poll()
-    const t = window.setInterval(poll, 60_000)
-    return () => window.clearInterval(t)
-  }, [wsStatus, refreshAnalysis, emitAlerts])
+      return next
+    })
+  }, [])
 
   // Toggle alerts (requests browser notification permission)
   const toggleAlerts = useCallback(async () => {
@@ -201,7 +191,6 @@ export default function App() {
   // Cleanup timers
   useEffect(() => {
     return () => {
-      if (analysisTimerRef.current !== undefined) window.clearTimeout(analysisTimerRef.current)
       for (const t of toastTimersRef.current) window.clearTimeout(t)
     }
   }, [])
@@ -216,8 +205,11 @@ export default function App() {
       <Header
         symbol={symbol}
         interval={interval}
-        wsStatus={wsStatus}
-        polling={polling}
+        refreshing={refreshing}
+        autoRefresh={autoRefresh}
+        lastRefresh={lastRefresh}
+        onRefresh={() => void refreshData()}
+        onToggleAutoRefresh={toggleAutoRefresh}
         alertsEnabled={alertsEnabled}
         onToggleAlerts={toggleAlerts}
         onSymbol={setSymbol}
@@ -227,21 +219,24 @@ export default function App() {
       <MtfBar mtf={analysis?.mtf ?? null} summary={analysis?.summary ?? null} interval={interval} />
       <div className="main">
         <div className="chart-area">
-          {loading && !analysis && <div className="loading-overlay">分析加载中…</div>}
+          {refreshing && !analysis && <div className="loading-overlay">分析加载中…</div>}
           <ChartPanel
             ref={chartRef}
             symbol={symbol}
             interval={interval}
             analysis={analysis}
             onAnalysis={handleAnalysis}
-            onWsKline={handleWsKline}
-            onWsStatus={setWsStatus}
             onError={handleError}
           />
         </div>
         <aside className="sidebar">
           <DecisionCard analysis={analysis} backtest={backtest} />
-          <TradePlanCard plan={analysis?.summary.tradePlan ?? null} />
+          <TradePlanCard plan={analysis?.summary.tradePlan ?? null} interval={interval} />
+          <PositionPanel
+            symbol={symbol}
+            interval={interval}
+            analysisTime={analysis?.candles?.length ? analysis.candles[analysis.candles.length - 1].time : null}
+          />
           <DerivativesPanel derivatives={derivatives} symbol={symbol} />
           <VolumeProfilePanel
             profile={analysis?.volumeProfile ?? null}

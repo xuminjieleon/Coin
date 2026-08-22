@@ -187,27 +187,52 @@ body {
   gap: 6px;
   font-size: 12px;
   color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
 }
 
-.ws-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-dim);
+.refresh-btn {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
 }
 
-.ws-open .ws-dot {
-  background: var(--up);
-  box-shadow: 0 0 6px var(--up);
+.refresh-btn:hover:not(:disabled) {
+  color: var(--text);
 }
 
-.ws-closed .ws-dot {
-  background: var(--down);
+.refresh-btn:disabled {
+  cursor: default;
 }
 
-.ws-polling .ws-dot {
-  background: #f0b90b;
-  box-shadow: 0 0 6px #f0b90b;
+.refresh-btn.auto-on {
+  color: var(--up);
+  border-color: rgba(38, 166, 154, 0.5);
+  background: rgba(38, 166, 154, 0.08);
+}
+
+.refresh-icon {
+  display: inline-block;
+  font-size: 13px;
+}
+
+.refresh-spinning {
+  animation: refresh-rotate 1s linear infinite;
+}
+
+@keyframes refresh-rotate {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .alert-btn {
@@ -353,6 +378,34 @@ body {
 .chart-container {
   width: 100%;
   height: 100%;
+  position: relative;
+}
+
+.chart-history-btn {
+  position: absolute;
+  top: 8px;
+  left: 12px;
+  z-index: 20;
+  background: rgba(22, 27, 34, 0.9);
+  color: var(--text-dim);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chart-history-btn:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.chart-history-btn:disabled {
+  cursor: default;
+}
+
+.chart-history-busy {
+  color: var(--accent);
 }
 
 .loading-overlay {
@@ -449,21 +502,24 @@ body {
 }
 
 .source-hint-pop {
-  display: none;
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 60;
-  width: 250px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 300px;
+  max-width: calc(100vw - 16px);
+  max-height: 70vh;
+  overflow-y: auto;
   padding: 10px 12px;
   background: #1c2128;
   border: 1px solid var(--card-border);
   border-radius: 6px;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 1000;
+  visibility: hidden;
 }
 
-.source-hint:hover .source-hint-pop {
-  display: block;
+.source-hint-pop-visible {
+  visibility: visible;
 }
 
 .source-hint-text {
@@ -1065,4 +1121,176 @@ body {
   stroke: var(--accent);
   stroke-width: 1.5;
   stroke-dasharray: 4 3;
+}
+
+/* ---- Position panel ---- */
+
+.pos-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.pos-dir-row {
+  display: flex;
+  gap: 6px;
+}
+
+.pos-dir-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 5px 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pos-dir-long {
+  color: var(--up);
+  border-color: rgba(38, 166, 154, 0.6);
+  background: rgba(38, 166, 154, 0.1);
+}
+
+.pos-dir-short {
+  color: var(--down);
+  border-color: rgba(239, 83, 80, 0.6);
+  background: rgba(239, 83, 80, 0.1);
+}
+
+.pos-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.pos-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.pos-field input {
+  background: #0d1117;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-field input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.pos-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.pos-run-btn {
+  flex: 1;
+  background: rgba(41, 98, 255, 0.15);
+  border: 1px solid rgba(41, 98, 255, 0.5);
+  border-radius: 6px;
+  color: var(--accent);
+  padding: 6px 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pos-run-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.pos-clear-btn {
+  background: transparent;
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 6px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.pos-error {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--down);
+}
+
+.pos-result {
+  margin-top: 10px;
+  border-top: 1px solid var(--card-border);
+  padding-top: 10px;
+}
+
+.pos-headline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 8px;
+}
+
+.pos-headline b {
+  font-variant-numeric: tabular-nums;
+}
+
+.pos-pnl-up {
+  color: var(--up);
+}
+
+.pos-pnl-down {
+  color: var(--down);
+}
+
+.pos-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.pos-items li {
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border-left: 3px solid var(--text-dim);
+  background: rgba(139, 148, 158, 0.06);
+  color: var(--text-dim);
+}
+
+.pos-item-ok {
+  border-left-color: var(--up);
+  color: var(--text);
+}
+
+.pos-item-warn {
+  border-left-color: #f0b90b;
+  color: var(--text);
+  background: rgba(240, 185, 11, 0.08);
+}
+
+.pos-item-danger {
+  border-left-color: var(--down);
+  color: var(--text);
+  background: rgba(239, 83, 80, 0.08);
+}
+
+.pos-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
 }

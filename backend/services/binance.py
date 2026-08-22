@@ -111,12 +111,17 @@ async def _get(path: str, params: dict | None = None, cache_ttl: float = 0) -> A
     return data
 
 
-async def get_klines(symbol: str, interval: str, limit: int = 500, cache_ttl: float = 0) -> list:
-    return await _get(
-        "/fapi/v1/klines",
-        {"symbol": symbol, "interval": interval, "limit": limit},
-        cache_ttl=cache_ttl,
-    )
+async def get_klines(
+    symbol: str,
+    interval: str,
+    limit: int = 500,
+    cache_ttl: float = 0,
+    end_time: int | None = None,
+) -> list:
+    params: dict[str, Any] = {"symbol": symbol, "interval": interval, "limit": limit}
+    if end_time is not None:
+        params["endTime"] = end_time
+    return await _get("/fapi/v1/klines", params, cache_ttl=cache_ttl)
 
 
 async def get_exchange_info() -> dict:

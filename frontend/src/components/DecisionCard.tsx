@@ -156,7 +156,7 @@ export default function DecisionCard({ analysis, backtest }: Props) {
             {` · n=${backtest.directionalSamples}`}
           </span>
           <SourceHint
-            text={`滚动回测：以该周期历史 K 线复算轻量评分（结构/EMA/RSI/溢价折价/CVD 背离，按趋势/震荡分化权重），统计其与未来 ${backtest.horizon} 根 K 线收益的关系。IC 为评分与未来收益的秩相关（>0.1 有效），胜率为 |评分|≥15 时方向命中率。历史表现不代表未来。`}
+            text={`滚动回测：以该周期最近 2 年历史 K 线（本地磁盘缓存，首次拉取较慢）复算轻量评分（结构/EMA/RSI/溢价折价/CVD 背离，按趋势/震荡分化权重），统计其与未来 ${backtest.horizon} 根 K 线收益的关系。IC 为评分与未来收益的秩相关（>0.1 有效），胜率为 |评分|≥15 时方向命中率。历史表现不代表未来。`}
           />
         </div>
       )}
