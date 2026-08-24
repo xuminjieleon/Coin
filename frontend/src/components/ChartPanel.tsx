@@ -29,6 +29,39 @@ const PERIOD_OF: Record<Interval, Period> = {
   '1w': { type: 'week', span: 1 },
 }
 
+const REPLAY_GROUP = 'replay-mark'
+
+function registerReplayMarkOverlay(): void {
+  if (!getOverlayClass('replayMark')) {
+    registerOverlay({
+      name: 'replayMark',
+      totalStep: 2,
+      needDefaultPointFigure: false,
+      needDefaultXAxisFigure: false,
+      needDefaultYAxisFigure: false,
+      createPointFigures: ({ coordinates, bounding }: OverlayCreateFiguresCallbackParams<never>): OverlayFigure[] => {
+        if (coordinates.length < 1) return []
+        const x = coordinates[0].x
+        return [
+          {
+            key: 'band',
+            type: 'rect',
+            ignoreEvent: true,
+            attrs: { x: x - 2, y: 0, width: 4, height: bounding.height },
+            styles: {
+              style: 'fill',
+              backgroundColor: 'rgba(41, 98, 255, 0.35)',
+              borderColor: 'rgba(41, 98, 255, 0.8)',
+              borderSize: 1,
+              borderStyle: 'solid',
+            },
+          },
+        ]
+      },
+    })
+  }
+}
+
 // ---------- custom overlays (registered once) ----------
 
 interface RectExtend {
@@ -199,10 +232,14 @@ interface Props {
   analysis: AnalysisResponse | null
   onAnalysis: (a: AnalysisResponse) => void
   onError: (msg: string) => void
+  /** candle click (open timestamp) — enables decision replay */
+  onCandleClick?: (time: number) => void
+  /** replay anchor: draws a vertical marker band at this candle */
+  replayTime?: number | null
 }
 
 const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
-  { symbol, interval, analysis, onAnalysis, onError },
+  { symbol, interval, analysis, onAnalysis, onError, onCandleClick, replayTime },
   ref,
 ) {
   const containerRef = useRef<HTMLDivElement>(null)
@@ -211,6 +248,7 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
   const intervalRef = useRef(interval)
   const onAnalysisRef = useRef(onAnalysis)
   const onErrorRef = useRef(onError)
+  const onCandleClickRef = useRef(onCandleClick)
   // last analysis fetch per data key (short-lived to avoid stale cache)
   const fetchSlotRef = useRef<{ key: string; at: number; promise: Promise<AnalysisResponse> } | null>(null)
   // bar push callback from the chart's data loader (subscribeBar)
@@ -222,6 +260,7 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
   intervalRef.current = interval
   onAnalysisRef.current = onAnalysis
   onErrorRef.current = onError
+  onCandleClickRef.current = onCandleClick
 
   useImperativeHandle(
     ref,
@@ -242,6 +281,7 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
 
   registerCustomOverlays()
   registerCvdIndicator()
+  registerReplayMarkOverlay()
 
   // Init chart + indicators + data loader once
   useEffect(() => {
@@ -394,8 +434,17 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
     const ro = new ResizeObserver(() => chart.resize())
     ro.observe(containerRef.current)
 
+    // candle click -> decision replay (payload: {dataIndex, data:{current}})
+    const handleCandleClick = (data?: unknown) => {
+      const d = data as { data?: { current?: { timestamp?: number } } } | undefined
+      const ts = d?.data?.current?.timestamp
+      if (typeof ts === 'number') onCandleClickRef.current?.(ts)
+    }
+    chart.subscribeAction('onCandleBarClick', handleCandleClick)
+
     return () => {
       ro.disconnect()
+      chart.unsubscribeAction('onCandleBarClick', handleCandleClick)
       barPushRef.current = null
       dispose(containerRef.current!)
       chartRef.current = null
@@ -417,6 +466,21 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
   const loadMoreHistory = () => {
     chartRef.current?.scrollToDataIndex(0)
   }
+
+  // replay marker: vertical band at the selected candle
+  useEffect(() => {
+    const chart = chartRef.current
+    if (!chart) return
+    chart.removeOverlay({ groupId: REPLAY_GROUP })
+    if (replayTime == null) return
+    chart.createOverlay({
+      name: 'replayMark',
+      groupId: REPLAY_GROUP,
+      points: [{ timestamp: replayTime }],
+      lock: true,
+      zLevel: 100,
+    } as OverlayCreate)
+  }, [replayTime])
 
   // SMC overlays from analysis + CVD indicator refresh
   useEffect(() => {
@@ -442,7 +506,6 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
 
     const specs = buildOverlaySpecs(analysis.smc, lastClose, {
       pocSeries: analysis.volumeProfile.pocSeries,
-      patterns: analysis.patterns,
       wyckoff: analysis.wyckoff,
     })
     for (const spec of specs) {
@@ -509,6 +572,9 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
           {historyState === 'loading' ? '历史加载中…' : '⟵ 加载更多历史'}
         </button>
       )}
+      <div className="chart-replay-hint" title="点击任意一根 K 线：以该 K 线及之前的全部数据（含衍生品/宏观因子时点值）重算当时的决策；再点其他 K 线可移动回放点">
+        点击 K 线回放决策
+      </div>
     </div>
   )
 })

@@ -4,7 +4,7 @@ import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
 from routers.derivatives import compute_oi_change_pct
-from services import binance, kline_cache
+from services import binance, derivs_store, kline_cache
 from services.analysis import decision, engine
 
 router = APIRouter(prefix="/api")
@@ -18,6 +18,8 @@ MTF_MAP = {
     "1d": [],
     "1w": [],
 }
+
+STEP_MS = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000}
 
 
 def _klines_to_df(raw: list) -> pd.DataFrame:
@@ -36,17 +38,31 @@ def _klines_to_df(raw: list) -> pd.DataFrame:
     return df
 
 
-async def _klines_df(symbol: str, interval: str, limit: int, cache_ttl: float = 0) -> pd.DataFrame:
-    raw = await binance.get_klines(symbol, interval, limit, cache_ttl=cache_ttl)
-    if not raw:
+async def _klines_df(symbol: str, interval: str, limit: int, cache_ttl: float = 0,
+                     end_time: int | None = None) -> pd.DataFrame:
+    if end_time is not None:
+        rows = await kline_cache.get_klines(symbol, interval, limit, end_time=end_time)
+        df = kline_cache.rows_to_df(rows)
+    else:
+        raw = await binance.get_klines(symbol, interval, limit, cache_ttl=cache_ttl)
+        if not raw:
+            raise HTTPException(status_code=404, detail=f"no klines for {symbol}")
+        df = _klines_to_df(raw)
+    if df.empty:
         raise HTTPException(status_code=404, detail=f"no klines for {symbol}")
-    return _klines_to_df(raw)
+    return df
 
 
-async def _prev_day_levels(symbol: str, interval: str) -> dict | None:
+async def _prev_day_levels(symbol: str, interval: str, as_of_ms: int | None = None) -> dict | None:
     if interval == "1d":
         return None
     try:
+        if as_of_ms is not None:
+            rows = await kline_cache.get_klines(symbol, "1d", 3, end_time=as_of_ms)
+            if len(rows) < 2:
+                return None
+            prev = rows[-2]
+            return {"high": float(prev[2]), "low": float(prev[3])}
         raw = await binance.get_klines(symbol, "1d", 2, cache_ttl=60)
         if len(raw) < 2:
             return None
@@ -56,8 +72,18 @@ async def _prev_day_levels(symbol: str, interval: str) -> dict | None:
         return None
 
 
-async def _derivatives_context(symbol: str) -> tuple[float | None, float | None]:
-    """Return (oi_change_pct_24h, funding_rate); None on failure."""
+async def _derivatives_context(symbol: str, as_of_ms: int | None = None) -> tuple[float | None, float | None]:
+    """(oi_change_pct_24h, funding_rate) for the WEIGHTED funding/OI decision
+    components. Live mode: Binance first, Gate.io daily-history fallback.
+    Replay mode (as_of set): ONLY as-of fully-closed daily rows — live values
+    would be lookahead. (The derivs/macro factor-context chips were removed in
+    round 12b after failing the profit-first acceptance bar.)"""
+    if as_of_ms is not None:
+        try:
+            daily = derivs_store.daily_rates(symbol, as_of_ms) or {}
+        except Exception:
+            daily = {}
+        return daily.get("oiChangePct"), daily.get("fundingRate")
     oi_change = None
     funding = None
     try:
@@ -70,16 +96,32 @@ async def _derivatives_context(symbol: str) -> tuple[float | None, float | None]
         funding = float(premium["lastFundingRate"])
     except Exception:
         pass
+    # Gate.io daily-history fallback when Binance live data is missing
+    try:
+        daily = derivs_store.daily_rates(symbol) or {}
+    except Exception:
+        daily = {}
+    if funding is None:
+        funding = daily.get("fundingRate")
+    if oi_change is None:
+        oi_change = daily.get("oiChangePct")
     return oi_change, funding
 
 
-async def _mtf_context(symbol: str, interval: str) -> dict:
-    """Summaries of higher timeframes for resonance display."""
+async def _mtf_context(symbol: str, interval: str, as_of_ms: int | None = None) -> dict:
+    """Summaries of higher timeframes for resonance display. In replay mode
+    (as_of set) only FULLY CLOSED higher-TF bars are used (no lookahead;
+    consistent with the backtest harness)."""
     tf_list = MTF_MAP.get(interval, [])
 
     async def one_tf(itv: str) -> dict | None:
         try:
-            df = await _klines_df(symbol, itv, 300, cache_ttl=60)
+            end_time = None
+            if as_of_ms is not None:
+                # higher-TF bar fully closed by the selected candle's close
+                end_time = as_of_ms + STEP_MS[interval] - STEP_MS[itv]
+            rows = await kline_cache.get_klines(symbol, itv, 300, end_time=end_time)
+            df = kline_cache.rows_to_df(rows)
             if len(df) < 60:
                 return None
             full = engine.full_analysis(df)
@@ -95,7 +137,6 @@ async def _mtf_context(symbol: str, interval: str) -> dict:
                 smc=full["smc"],
                 indicators=full["indicators"],
                 volume_profile=full["volumeProfile"],
-                patterns=full["patterns"],
                 wyckoff=full["wyckoff"],
                 volatility=full["volatility"],
                 cvd_div=full["cvdDivergence"],
@@ -161,6 +202,7 @@ async def get_analysis(
     symbol: str = Query(...),
     interval: str = Query(default="1h"),
     limit: int = Query(default=500),
+    asOf: int | None = Query(default=None, description="replay mode: decision as of this candle open time (ms)"),
 ):
     if interval not in ALLOWED_INTERVALS:
         raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(ALLOWED_INTERVALS)}")
@@ -168,13 +210,15 @@ async def get_analysis(
         raise HTTPException(status_code=400, detail="limit must be between 100 and 1000")
     symbol = symbol.upper()
 
-    df_task = _klines_df(symbol, interval, limit)
-    prev_day_task = _prev_day_levels(symbol, interval)
-    mtf_task = _mtf_context(symbol, interval)
-    deriv_task = _derivatives_context(symbol)
+    df_task = _klines_df(symbol, interval, limit, end_time=asOf)
+    prev_day_task = _prev_day_levels(symbol, interval, as_of_ms=asOf)
+    mtf_task = _mtf_context(symbol, interval, as_of_ms=asOf)
+    deriv_task = _derivatives_context(symbol, as_of_ms=asOf)
     df, prev_day, mtf, (oi_change, funding) = await asyncio.gather(
         df_task, prev_day_task, mtf_task, deriv_task
     )
+    if len(df) < 60:
+        raise HTTPException(status_code=404, detail=f"no klines for {symbol} before asOf")
 
     full = engine.full_analysis(df, prev_day)
     closes = df["close"]
@@ -193,7 +237,6 @@ async def get_analysis(
         oi_change_pct=oi_change,
         price_change_pct=price_change_pct,
         funding_rate=funding,
-        patterns=full["patterns"],
         wyckoff=full["wyckoff"],
         volatility=full["volatility"],
         cvd_div=full["cvdDivergence"],
@@ -220,10 +263,10 @@ async def get_analysis(
         "smc": full["smc"],
         "indicators": full["indicators"],
         "volumeProfile": full["volumeProfile"],
-        "patterns": full["patterns"],
         "wyckoff": full["wyckoff"],
         "volatility": full["volatility"],
         "cvdDivergence": full["cvdDivergence"],
         "mtf": mtf,
         "summary": summary,
+        "replay": {"asOf": asOf} if asOf is not None else None,
     }

@@ -184,6 +184,38 @@ async def _backfill_binance(symbol: str) -> None:
     ])
 
 
+def daily_rates(symbol: str, as_of_ms: int | None = None) -> dict:
+    """Funding rate + OI daily change from FULLY CLOSED daily rows, used as
+    the Gate.io fallback for the WEIGHTED funding/OI decision components
+    when Binance live data is unreachable (also for replay mode).
+
+    Round-12b note: the percentile factor context (funding/OI/LSR/top-trader
+    percentiles) that used to live here was REMOVED from the decision after
+    failing the profit-first acceptance bar — see tests/profit3_factors.py,
+    tests/profit3_weights.py. Percentiles for DISPLAY still come from
+    history_stats() for the derivatives market-data panel.
+    """
+    if as_of_ms is None:
+        as_of_ms = int(time.time() * 1000)
+    daily = _read_stats(symbol.upper(), "1d", 4000)
+    if len(daily) < 2:
+        return {}
+    close_s = as_of_ms / 1000.0
+    # last row whose END (ts + 1d) is at/before the decision moment
+    # (gateio_stats ts is in SECONDS)
+    idx = len(daily) - 1
+    while idx >= 0 and daily[idx]["time"] + 86400.0 > close_s:
+        idx -= 1
+    if idx < 0:
+        return {}
+    cur = daily[idx]
+    out: dict = {"fundingRate": cur["funding"]}
+    if idx > 0 and daily[idx - 1]["oiUsd"] and cur["oiUsd"]:
+        out["oiChangePct"] = round(
+            (cur["oiUsd"] - daily[idx - 1]["oiUsd"]) / daily[idx - 1]["oiUsd"] * 100.0, 2)
+    return out
+
+
 async def ensure_backfill(symbol: str) -> str | None:
     """Backfill stats history if stale. Priority: Gate.io contract_stats,
     then Binance futures public data. Returns the source used, or None.
@@ -197,7 +229,7 @@ async def ensure_backfill(symbol: str) -> str | None:
             return None
         await asyncio.sleep(0.4)
     newest = _newest_ts(symbol, "1d")
-    if newest and time.time() - newest / 1000.0 < REFRESH_AFTER_S:
+    if newest and time.time() - newest < REFRESH_AFTER_S:  # gateio ts is in seconds
         return "fresh"
     _backfilling.add(symbol)
     used: str | None = None

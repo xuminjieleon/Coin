@@ -1894,3 +1894,41 @@ body {
   border-top: 1px solid var(--card-border);
   flex-wrap: wrap;
 }
+
+/* ---- Decision replay ---- */
+
+.replay-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: rgba(41, 98, 255, 0.12);
+  border: 1px solid rgba(41, 98, 255, 0.45);
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.replay-banner-icon {
+  font-size: 14px;
+}
+
+.replay-banner-text {
+  flex: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-exit-btn {
+  background: transparent;
+  border: 1px solid rgba(41, 98, 255, 0.5);
+  border-radius: 6px;
+  color: var(--accent);
+  padding: 3px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.replay-exit-btn:hover {
+  background: rgba(41, 98, 255, 0.15);
+}

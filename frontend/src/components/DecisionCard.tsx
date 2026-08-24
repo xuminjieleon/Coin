@@ -66,15 +66,21 @@ function ScoreGauge({ score }: { score: number }) {
   )
 }
 
+const DECISION_HINT =
+  'CoinLens 本地分析引擎加权评分：按趋势市/震荡市自动切换权重（结构趋势 30/10、EMA 排列 8/2、多周期共振 10/8、' +
+  'CVD 背离 14/16 及多周期共振、订单块 8/10、资金费率 10/8、OI 10/6、RSI 仅震荡市 0/10、Wyckoff 6/8、磁吸 4/6、' +
+  '溢价折价 2/5）。已按回测结论移除的因子：FVG/图表形态/K线形态/扫流动性/偏离度（多轮归因一致为负或零，2026-08-24 清理）；' +
+  '衍生品分位与宏观因子（资金费率分位/大户多空/清算烈度/VIX/美元/纳指，2026-08-24 第 12 轮回测未达利润验收线，已从决策移除）。' +
+  '数据源不可达的维度自动跳过。2年×3币种回测：方向胜率长期约 50~61%，请勿将评分当作方向概率使用；可靠的执行优势见「交易计划」卡。' +
+  '仅辅助参考，不构成投资建议。'
+
 export default function DecisionCard({ analysis, backtest }: Props) {
   if (!analysis) {
     return (
       <div className="panel">
         <div className="panel-title-row">
           <div className="panel-title">决策摘要</div>
-          <SourceHint
-            text="CoinLens 本地分析引擎加权评分：按趋势市/震荡市自动切换权重（结构趋势 30/10、EMA 排列 8/2、多周期共振 10/8、CVD 背离 14/16 及多周期共振、订单块 8/10、资金费率 10/8、OI 10/6、RSI 仅震荡市 0/10、Wyckoff 6/8、磁吸 4/6、溢价折价 2/5；FVG/图表形态/K线形态仅展示不计分——大样本归因为负）。数据源不可达的维度自动跳过。2年×3币种回测：方向胜率长期约 50~61%，请勿将评分当作方向概率使用；可靠的执行优势见「交易计划」卡。仅辅助参考，不构成投资建议。"
-          />
+          <SourceHint text={DECISION_HINT} />
         </div>
         <div className="panel-empty">加载中…</div>
       </div>
@@ -86,9 +92,7 @@ export default function DecisionCard({ analysis, backtest }: Props) {
     <div className="panel">
       <div className="panel-title-row">
         <div className="panel-title">决策摘要</div>
-        <SourceHint
-          text="CoinLens 本地分析引擎加权评分：按趋势市/震荡市自动切换权重（结构趋势 30/10、EMA 排列 8/2、多周期共振 10/8、CVD 背离 14/16 及多周期共振、订单块 8/10、资金费率 10/8、OI 10/6、RSI 仅震荡市 0/10、Wyckoff 6/8、磁吸 4/6、溢价折价 2/5；FVG/图表形态/K线形态仅展示不计分——大样本归因为负）。数据源不可达的维度自动跳过。2年×3币种回测：方向胜率长期约 50~61%，请勿将评分当作方向概率使用；可靠的执行优势见「交易计划」卡。仅辅助参考，不构成投资建议。"
-        />
+        <SourceHint text={DECISION_HINT} />
       </div>
       <ScoreGauge score={summary.score} />
       <div className="decision-tags">

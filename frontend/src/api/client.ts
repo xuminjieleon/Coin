@@ -185,27 +185,6 @@ export interface Summary {
   cvdConfluence?: { direction: 'bullish' | 'bearish' | null; count: number } | null
 }
 
-export interface CandlePattern {
-  time: number
-  type: string
-  direction: 'bullish' | 'bearish' | 'neutral'
-  price: number
-}
-
-export interface ChartPattern {
-  type: string
-  direction: 'bullish' | 'bearish' | 'neutral'
-  startTime: number
-  endTime: number
-  confidence: number
-  keyLevel?: number | null
-}
-
-export interface Patterns {
-  candles: CandlePattern[]
-  charts: ChartPattern[]
-}
-
 export interface WyckoffEvent {
   time: number
   type: 'spring' | 'utad' | 'sos'
@@ -247,12 +226,12 @@ export interface AnalysisResponse {
   smc: SmcResult
   indicators: Indicators
   volumeProfile: VolumeProfile
-  patterns: Patterns
   wyckoff: Wyckoff
   volatility: Volatility
   cvdDivergence: CvdDivergence | null
   mtf: Mtf
   summary: Summary
+  replay?: { asOf: number } | null
 }
 
 export interface OiPoint {
@@ -335,9 +314,15 @@ export function fetchSymbols(q?: string): Promise<SymbolInfo[]> {
   return request<SymbolInfo[]>(`/api/symbols${query}`)
 }
 
-export function fetchAnalysis(symbol: string, interval: string, limit = 500): Promise<AnalysisResponse> {
+export function fetchAnalysis(
+  symbol: string,
+  interval: string,
+  limit = 500,
+  asOf?: number,
+): Promise<AnalysisResponse> {
+  const suffix = asOf != null ? `&asOf=${asOf}` : ''
   return request<AnalysisResponse>(
-    `/api/analysis?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}`,
+    `/api/analysis?symbol=${encodeURIComponent(symbol)}&interval=${interval}&limit=${limit}${suffix}`,
   )
 }
 

@@ -11,7 +11,7 @@ frontend/tsconfig.tsbuildinfo
 # 回测缓存（按引擎源码哈希自动重建）
 backend/tests/_bt_cache.pkl
 backend/tests/_profit_cache.pkl
-backend/tests/_profit2_cache_*.pkl
+backend/tests/_profit2_cache*.pkl
 backend/tests/_profit2_oos_cache_*.pkl
 
 # 回测运行日志（结论已固化进 AGENTS.md，可由工具重跑）

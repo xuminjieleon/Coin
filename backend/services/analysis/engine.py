@@ -1,6 +1,6 @@
 """Full analysis pipeline over one kline dataframe. Shared by the analysis
 router (current TF) and the MTF context (higher TFs)."""
-from services.analysis import indicators, patterns, smc, swings, volume, wyckoff
+from services.analysis import indicators, smc, swings, volume, wyckoff
 
 
 def _last_valid(series: list) -> float | None:
@@ -36,18 +36,14 @@ def full_analysis(df, prev_day: dict | None = None) -> dict:
 
     vol_state = indicators.volatility_state(df, ind["atr14"])
 
-    pat = {
-        "candles": patterns.detect_candle_patterns(df),
-        "charts": patterns.detect_chart_patterns(df, swing_list, atr_last),
-        "lastIndex": len(df) - 1,
-    }
+    # patterns (chart / candlestick) removed in round 12b: zero-weight with
+    # consistently negative attribution — see decision.py docstring.
     wy = wyckoff.analyze(df, swing_list, smc_result, atr_last)
 
     return {
         "smc": smc_result,
         "indicators": ind,
         "volumeProfile": vp,
-        "patterns": pat,
         "wyckoff": wy,
         "volatility": vol_state,
         "cvdDivergence": cvd_div,

@@ -1,4 +1,4 @@
-﻿"""Composite scoring engine: regime-differentiated weights, MTF resonance,
+"""Composite scoring engine: regime-differentiated weights, MTF resonance,
 CVD multi-timeframe confluence, sweep events and an executable trade plan.
 
 Calibration notes:
@@ -23,6 +23,27 @@ Calibration notes:
     Note: 1w backtest records used warmup 170 (no EMA200) while production
     1w analysis may include it - second-order score-composition mismatch,
     documented. Fees/slippage NOT modeled (~maker 0.02%).
+  - Round 12 (2026-08-24, tests/profit3_factors.py + profit3_weights.py):
+    NEW data dimensions (derivs percentiles from Gate.io history, macro
+    linkage) tested for profit-first integration — 9 gates (funding/OI/LSR/
+    liquidation crowding, VIX/DXY/NDX risk-off) ALL reduced blind profit;
+    score-component weight grid hurt 1d (incumbent best on A+B), improved
+    4h by only ~2% blind (below the pre-registered 10% bar), 1w +19%
+    relative but on a 36-fill sample. Round 12b (same day, user request):
+    backtested-useless factors REMOVED from code and UI —
+      * derivs/macro factorContext chips (round-12 verdict: no profit lift)
+      * chart patterns / candlestick patterns (zero weight since round 6,
+        negative attribution in every round; detection module deleted)
+      * FVG / sweep / extension decision branches (dead code at weight 0)
+    Kept because they are NOT decision factors or carry real weight:
+      * FVG detection — anchors trade-plan entry zones (part of the
+        round-11 validated geometry: zones = OB + FVG)
+      * sweep events — feed the alert engine and chart 扫↑/扫↓ markers
+      * funding/OI weighted components (10/8 and 10/6) — pre-existing
+        weights from early calibration, now with a Gate.io daily fallback
+        via derivs_store.daily_rates() when Binance is unreachable
+    Score is unchanged by this cleanup (everything removed had weight 0
+    or was display-only); regression-checked on live endpoints.
 """
 
 NEAR_PCT = 0.03  # 3% proximity for OB / FVG
@@ -51,16 +72,19 @@ PLAN_THRESHOLD = {
     "1w": 10,
 }
 
+# Weighted components only. Removed at weight 0 after consistent negative
+# attribution across calibration rounds (round 12b cleanup): fvg, sweep,
+# chart_pat, candle, extension — see module docstring.
 WEIGHTS = {
     "trending": {
-        "structure": 30, "ema_stack": 8, "ob": 8, "fvg": 0, "mtf": 10, "cvd": 14,
-        "cvd_conf": 9, "sweep": 0, "funding": 10, "oi": 10, "rsi_extreme": 0, "pd": 2,
-        "chart_pat": 0, "candle": 0, "magnet": 4, "wyckoff": 6, "extension": 0,
+        "structure": 30, "ema_stack": 8, "ob": 8, "mtf": 10, "cvd": 14,
+        "cvd_conf": 9, "funding": 10, "oi": 10, "rsi_extreme": 0, "pd": 2,
+        "magnet": 4, "wyckoff": 6,
     },
     "ranging": {
-        "structure": 10, "ema_stack": 2, "ob": 10, "fvg": 0, "mtf": 8, "cvd": 16,
-        "cvd_conf": 9, "sweep": 0, "funding": 8, "oi": 6, "rsi_extreme": 10, "pd": 5,
-        "chart_pat": 0, "candle": 0, "magnet": 6, "wyckoff": 8, "extension": 0,
+        "structure": 10, "ema_stack": 2, "ob": 10, "mtf": 8, "cvd": 16,
+        "cvd_conf": 9, "funding": 8, "oi": 6, "rsi_extreme": 10, "pd": 5,
+        "magnet": 6, "wyckoff": 8,
     },
 }
 
@@ -88,7 +112,6 @@ def build_summary(
     oi_change_pct: float | None = None,
     price_change_pct: float | None = None,
     funding_rate: float | None = None,
-    patterns: dict | None = None,
     wyckoff: dict | None = None,
     volatility: dict | None = None,
     cvd_div: dict | None = None,
@@ -165,20 +188,10 @@ def build_summary(
             add(f"上方 3% 内存在未缓解看跌订单块（质量 {best.get('quality', 50)}）",
                 -_zone_weight(w["ob"], best.get("quality")))
 
-    # --- FVGs (quality-scaled; zero weight -> display only) ---
-    if w["fvg"] > 0:
-        bull_fvgs = [f for f in smc["fvgs"] if f["type"] == "bullish" and not f["mitigated"]]
-        below_f = [f for f in bull_fvgs if f["top"] <= price and (price - f["top"]) / price <= NEAR_PCT]
-        if below_f:
-            best = max(below_f, key=lambda f: f.get("quality") or 0)
-            add(f"下方 3% 内存在未回补看涨 FVG（质量 {best.get('quality', 50)}）",
-                _zone_weight(w["fvg"], best.get("quality")))
-        bear_fvgs = [f for f in smc["fvgs"] if f["type"] == "bearish" and not f["mitigated"]]
-        above_f = [f for f in bear_fvgs if f["bottom"] >= price and (f["bottom"] - price) / price <= NEAR_PCT]
-        if above_f:
-            best = max(above_f, key=lambda f: f.get("quality") or 0)
-            add(f"上方 3% 内存在未回补看跌 FVG（质量 {best.get('quality', 50)}）",
-                -_zone_weight(w["fvg"], best.get("quality")))
+    # --- FVG as a DECISION FACTOR removed (round 12b): weight 0 with negative
+    # attribution in every calibration round. FVG zones are still detected in
+    # the SMC engine because the validated trade-plan entry logic anchors on
+    # OB + FVG zones (round-11 geometry). ---
 
     # --- MTF resonance (higher timeframes) ---
     if mtf and structure_dir is not None:
@@ -227,21 +240,12 @@ def build_summary(
         sgn = 1 if conf_dir == "bullish" else -1
         add(f"CVD 多周期共振（{conf_count} 个周期背离一致）", sgn * w["cvd_conf"] * min(conf_count - 1, 2))
 
-    # --- liquidity sweep events (weight 0 = display/alert only) ---
-    if w["sweep"] > 0:
-        sweeps = smc.get("sweepEvents") or []
-        recent_sweeps = sweeps[-2:] if sweeps else []
-        for ev in recent_sweeps:
-            if ev["side"] == "buy_side" and ev["outcome"] == "reclaimed":
-                add("上方买方流动性被扫后收回（短线诱多，反转信号）", -w["sweep"])
-            elif ev["side"] == "sell_side" and ev["outcome"] == "reclaimed":
-                add("下方卖方流动性被扫后收回（短线诱空，反转信号）", w["sweep"])
-            elif ev["side"] == "buy_side" and ev["outcome"] == "broken":
-                add("上方买方流动性被有效突破（延续看涨）", w["sweep"])
-            elif ev["side"] == "sell_side" and ev["outcome"] == "broken":
-                add("下方卖方流动性被有效跌破（延续看跌）", -w["sweep"])
+    # --- liquidity sweep events as a DECISION FACTOR removed (round 12b):
+    # weight 0, negative attribution since round 2. Sweep events are still
+    # detected for the alert engine and the chart 扫↑/扫↓ markers. ---
 
-    # --- OI x price confirmation (injected) ---
+    # --- OI x price confirmation (injected; router applies the
+    # derivs_store.daily_rates fallback when Binance live data is missing) ---
     if oi_change_pct is not None and price_change_pct is not None:
         if price_change_pct > 0 and oi_change_pct > 0:
             add("价格上涨且持仓量增加（趋势确认）", w["oi"])
@@ -259,6 +263,10 @@ def build_summary(
         elif funding_rate < -FUNDING_THRESHOLD:
             add("资金费率显著为负（空头过热，反向信号）", w["funding"])
 
+    # --- derivs / macro factor chips REMOVED (round 12b): gates and score
+    # weights both failed the pre-registered profit-first acceptance bar
+    # (tests/profit3_factors.py, tests/profit3_weights.py). ---
+
     # --- RSI (regime-differentiated) ---
     rsi = _last_valid(indicators.get("rsi14", []))
     if rsi is not None and w["rsi_extreme"] > 0:
@@ -267,44 +275,9 @@ def build_summary(
         elif rsi < 30:
             add(f"RSI 超卖（{rsi:.0f}，震荡市反向信号）", w["rsi_extreme"])
 
-    # --- chart patterns (zero weight -> display only) ---
-    if patterns and w["chart_pat"] > 0:
-        for cp in (patterns.get("charts") or [])[-2:]:
-            sgn = 1 if cp["direction"] == "bullish" else (-1 if cp["direction"] == "bearish" else 0)
-            if sgn != 0:
-                names = {
-                    "double_top": "双顶", "double_bottom": "双底",
-                    "head_shoulders_top": "头肩顶", "head_shoulders_bottom": "头肩底",
-                }
-                nm = names.get(cp["type"], cp["type"])
-                add(f"图表形态「{nm}」已确认（置信度 {cp.get('confidence', 0.6):.0%}）",
-                    sgn * w["chart_pat"] * cp.get("confidence", 0.6))
-
-    # --- candlestick patterns (zero weight -> display only) ---
-    if patterns and w["candle"] > 0:
-        last_idx = patterns.get("lastIndex")
-        cand = [
-            c for c in (patterns.get("candles") or [])
-            if c["direction"] != "neutral"
-            and (last_idx is None or c.get("index") is None or last_idx - c["index"] <= 8)
-        ]
-        if cand:
-            c = cand[-1]
-            names = {
-                "bullish_engulfing": "看涨吞没", "bearish_engulfing": "看跌吞没",
-                "bullish_pinbar": "看涨 PinBar", "bearish_pinbar": "看跌 PinBar",
-                "morning_star": "晨星", "evening_star": "暮星",
-            }
-            nm = names.get(c["type"], c["type"])
-            add(f"近期 K 线形态「{nm}」", (1 if c["direction"] == "bullish" else -1) * w["candle"])
-
-    # --- trend extension guard (zero weight: negative attribution) ---
-    if e20 and atr and w["extension"] > 0:
-        ext = (price - e20) / atr
-        if ext > 2.5:
-            add(f"价格短期过热（偏离 EMA20 达 {ext:.1f}×ATR，回撤风险）", -w["extension"])
-        elif ext < -2.5:
-            add(f"价格短期超卖（偏离 EMA20 达 {abs(ext):.1f}×ATR，反弹概率）", w["extension"])
+    # --- chart patterns / candlestick patterns / extension guard REMOVED
+    # (round 12b): all three sat at weight 0 with consistently negative
+    # attribution across calibration rounds — see module docstring. ---
 
     # --- liquidity magnet ---
     buy_pools = [p for p in smc["liquidityPools"] if p["type"] == "buy_side" and p["price"] >= price]

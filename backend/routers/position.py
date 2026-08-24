@@ -75,7 +75,6 @@ async def advise_position(pos: PositionInput):
         indicators=full["indicators"],
         volume_profile=full["volumeProfile"],
         price_change_pct=price_change_pct,
-        patterns=full["patterns"],
         wyckoff=full["wyckoff"],
         volatility=full["volatility"],
         cvd_div=full["cvdDivergence"],

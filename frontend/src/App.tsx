@@ -87,6 +87,8 @@ export default function App() {
   const [lastRefresh, setLastRefresh] = useState<Date | null>(null)
   const [alertsEnabled, setAlertsEnabled] = useState(false)
   const [toasts, setToasts] = useState<AlertMessage[]>([])
+  // decision replay: click a candle -> analysis as of that candle
+  const [replay, setReplay] = useState<{ time: number; analysis: AnalysisResponse | null; loading: boolean } | null>(null)
   const chartRef = useRef<ChartPanelHandle>(null)
   const symbolRef = useRef(symbol)
   const intervalRef = useRef(interval)
@@ -221,6 +223,7 @@ export default function App() {
     setDerivatives(null)
     setOrderbook(null)
     setLiquidations(null)
+    setReplay(null)
     loadDerivatives()
     loadBacktest()
     loadMarketPanels()
@@ -277,14 +280,47 @@ export default function App() {
     }
   }, [])
 
-  const lastClose =
-    analysis && analysis.candles.length > 0
-      ? analysis.candles[analysis.candles.length - 1].close
-      : null
+  // Candle click -> replay decision at that candle (fetch analysis asOf)
+  const selectCandle = useCallback(
+    (time: number) => {
+      setTab('decision')
+      setReplay((prev) => {
+        if (prev && prev.time === time && prev.analysis) return prev
+        return { time, analysis: null, loading: true }
+      })
+      void (async () => {
+        try {
+          const a = await fetchAnalysis(symbolRef.current, intervalRef.current, 500, time)
+          setReplay((prev) => (prev && prev.time === time ? { time, analysis: a, loading: false } : prev))
+        } catch (e) {
+          setError(`回放分析失败：${e instanceof Error ? e.message : String(e)}`)
+          setReplay((prev) => (prev && prev.time === time ? { ...prev, loading: false } : prev))
+        }
+      })()
+    },
+    [],
+  )
+
+  const exitReplay = useCallback(() => setReplay(null), [])
+
   const lastTime =
     analysis && analysis.candles.length > 0
       ? analysis.candles[analysis.candles.length - 1].time
       : null
+  // decision-tab panels use the replay analysis when active
+  const decisionAnalysis = replay?.analysis ?? analysis
+  const decisionLastClose =
+    decisionAnalysis && decisionAnalysis.candles.length > 0
+      ? decisionAnalysis.candles[decisionAnalysis.candles.length - 1].close
+      : null
+  const replayDate = replay ? new Date(replay.time) : null
+  const replayLabel = replayDate
+    ? `${replayDate.getFullYear()}-${String(replayDate.getMonth() + 1).padStart(2, '0')}-${String(
+        replayDate.getDate(),
+      ).padStart(2, '0')} ${String(replayDate.getHours()).padStart(2, '0')}:${String(
+        replayDate.getMinutes(),
+      ).padStart(2, '0')}`
+    : ''
 
   return (
     <div className="app">
@@ -303,7 +339,11 @@ export default function App() {
         onScan={() => setScanOpen(true)}
       />
       {error && <div className="error-banner">{error}</div>}
-      <MtfBar mtf={analysis?.mtf ?? null} summary={analysis?.summary ?? null} interval={interval} />
+      <MtfBar
+        mtf={decisionAnalysis?.mtf ?? null}
+        summary={decisionAnalysis?.summary ?? null}
+        interval={interval}
+      />
       <div className="main">
         <div className="chart-area">
           {refreshing && !analysis && <div className="loading-overlay">分析加载中…</div>}
@@ -311,9 +351,11 @@ export default function App() {
             ref={chartRef}
             symbol={symbol}
             interval={interval}
-            analysis={analysis}
+            analysis={decisionAnalysis}
             onAnalysis={handleAnalysis}
             onError={handleError}
+            onCandleClick={selectCandle}
+            replayTime={replay?.time ?? null}
           />
         </div>
         <aside className="sidebar">
@@ -342,12 +384,27 @@ export default function App() {
           </div>
           {tab === 'decision' && (
             <>
-              <DecisionCard analysis={analysis} backtest={backtest} />
-              <TradePlanCard plan={analysis?.summary.tradePlan ?? null} interval={interval} />
+              {replay && (
+                <div className="replay-banner">
+                  <span className="replay-banner-icon">⏱</span>
+                  <span className="replay-banner-text">
+                    回放 {replayLabel}
+                    {replay.loading ? ' · 分析中…' : ''}
+                  </span>
+                  <button className="replay-exit-btn" onClick={exitReplay} type="button">
+                    返回实时
+                  </button>
+                </div>
+              )}
+              <DecisionCard analysis={decisionAnalysis} backtest={backtest} />
+              <TradePlanCard
+                plan={decisionAnalysis?.summary.tradePlan ?? null}
+                interval={interval}
+              />
               <DerivativesPanel derivatives={derivatives} symbol={symbol} />
               <VolumeProfilePanel
-                profile={analysis?.volumeProfile ?? null}
-                currentPrice={lastClose}
+                profile={decisionAnalysis?.volumeProfile ?? null}
+                currentPrice={decisionLastClose}
                 symbol={symbol}
               />
             </>
