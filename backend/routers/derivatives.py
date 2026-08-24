@@ -1,6 +1,6 @@
 from fastapi import APIRouter, HTTPException, Query
 
-from services import binance, gateio
+from services import binance, derivs_store, gateio
 
 router = APIRouter(prefix="/api")
 
@@ -83,6 +83,8 @@ async def get_derivatives(symbol: str = Query(...)):
         "longShortRatio": None,
         "longShortHistory": None,
         "takerBuySellRatio": None,
+        "topTraderRatio": None,
+        "historyStats": None,
         "source": None,
         "options": None,
     }
@@ -107,6 +109,16 @@ async def get_derivatives(symbol: str = Query(...)):
         opt = await gateio.options_snapshot(symbol)
         if opt:
             result["options"] = opt
+    except Exception:
+        pass
+
+    # Persist snapshot + backfill percentile context (best effort)
+    try:
+        derivs_store.record_snapshot(symbol, result["source"], result)
+        await derivs_store.ensure_backfill(symbol)
+        stats = derivs_store.history_stats(symbol)
+        if stats:
+            result["historyStats"] = stats
     except Exception:
         pass
 

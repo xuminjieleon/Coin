@@ -2,7 +2,20 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from routers import analysis, backtest, calendar, derivatives, position, symbols
+from routers import (
+    analysis,
+    backtest,
+    calendar,
+    derivatives,
+    journal,
+    macro,
+    market,
+    portfolio,
+    position,
+    scanner,
+    sources,
+    symbols,
+)
 
 app = FastAPI(title="CoinLens")
 
@@ -18,6 +31,12 @@ app.include_router(derivatives.router)
 app.include_router(backtest.router)
 app.include_router(calendar.router)
 app.include_router(position.router)
+app.include_router(market.router)
+app.include_router(macro.router)
+app.include_router(scanner.router)
+app.include_router(journal.router)
+app.include_router(portfolio.router)
+app.include_router(sources.router)
 
 
 @app.get("/api/health")

@@ -13,6 +13,7 @@ interface Props {
   onToggleAlerts: () => void
   onSymbol: (s: string) => void
   onInterval: (i: Interval) => void
+  onScan: () => void
 }
 
 function formatTime(d: Date | null): string {
@@ -35,6 +36,7 @@ export default function Header({
   onToggleAlerts,
   onSymbol,
   onInterval,
+  onScan,
 }: Props) {
   return (
     <header className="header">
@@ -68,6 +70,13 @@ export default function Header({
         title="自动刷新：每 5 分钟重新拉取全部数据（关闭后仅手动刷新）"
       >
         自动 5min {autoRefresh ? '开' : '关'}
+      </button>
+      <button
+        className="refresh-btn scan-btn"
+        onClick={onScan}
+        title="全市场扫描：按 24h 成交额前 40 的 USDT 交易对跑同一套引擎评分排序，点击行切换标的"
+      >
+        <span>⚡</span> 扫描
       </button>
       <button
         className={`alert-btn ${alertsEnabled ? 'alert-on' : ''}`}

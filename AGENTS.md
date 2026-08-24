@@ -27,15 +27,22 @@
 ```
 浏览器(React SPA, :5173)
   └─ REST /api/* ──→ FastAPI 后端(:8000)
-                      ├─ services/binance.py     币安数据(主源+镜像failover+冷却)
-                      ├─ services/gateio.py      Gate.io 衍生品回退源
-                      ├─ services/kline_cache.py K线本地SQLite缓存(不可变历史+连续性检测)
-                      └─ services/analysis/      swings→smc→indicators→volume→decision
+                      ├─ services/binance.py       币安数据(主源+镜像failover+冷却)
+                      ├─ services/gateio.py        Gate.io 衍生品(合约/期权/订单簿/contract_stats)
+                      ├─ services/kline_cache.py   K线本地SQLite缓存(不可变历史+连续性检测)
+                      ├─ services/derivs_store.py  衍生品历史持久化(Gate.io stats回填+快照+分位数)
+                      ├─ services/microstructure.py 订单簿微观结构(深度/失衡/大单墙)
+                      ├─ services/liquidations.py  清算数据(24h多空清算+分位+杠杆地图)
+                      ├─ services/onchain.py       链上数据(mempool.space+blockchain.info)
+                      ├─ services/macro.py         宏观联动(Yahoo日线+SQLite缓存+相关性)
+                      ├─ services/scanner.py       全市场扫描(流动性前N跑引擎排序)
+                      ├─ services/journal_store.py 交易日记(SQLite+计划重放+遵循率)
+                      └─ services/analysis/        swings→smc→indicators→volume→decision
 ```
 
 > **数据模式（2026-08-22 起）**：不使用实时推送（币安 WS 模块已删除）。统一为**手动刷新按钮 + 每 5 分钟自动刷新**（开关持久化 localStorage `coinlens.autoRefresh`），刷新时一次性重拉 analysis/derivatives/backtest 并把新 K 线尾部原地同步进图表（`syncBars`：时间戳等于最后一根→更新、更大→追加、更旧→忽略，不重置视图）。
 
-布局：顶部 Header（搜索/周期/刷新按钮/自动刷新开关/预警铃铛/更新时间）｜左侧 klinecharts 主图+SMC 标注+EMA/RSI｜右侧 360px 栏：决策摘要卡 → 衍生品面板 → 成交量分布。
+布局：顶部 Header（搜索/周期/刷新按钮/自动刷新开关/**全市场扫描按钮**/预警铃铛/更新时间）｜左侧 klinecharts 主图+SMC 标注+EMA/RSI｜右侧 360px 栏**分三个 Tab**（2026-08-24 起）：**决策**（决策摘要→交易计划→衍生品→成交量分布）｜**市场数据**（宏观联动→链上→订单簿→清算→事件日历）｜**交易**（组合风控→我的仓位→交易日记）。Tab 选择持久化 localStorage `coinlens.tab`。
 
 ## 4. API 契约（前后端共同遵守）
 
@@ -49,6 +56,15 @@
 - `GET /api/calendar` → `{events[{date,time,title,impact,kind}], note}`（本地维护 `backend/data/events.json`，网络封锁无法拉取宏观日历 API）
 - `POST /api/position/advise`（2026-08-22 新增，同日补充杠杆）：body `{symbol, interval, direction('long'|'short'), entry, stop?, qty?, leverage?(1~200), openedAt?(ms)}` → `{price, pnlPct, unrealizedR, mfeR, barsHeld, levels{suggestedStop,beTrigger,trailStop,liqPrice}, items[{level(ok|info|warn|danger),text}], note}`。规则化仓位建议：顺势/逆势检查（vs 当前评分）、止损建议（PLAN_GEOMETRY 的 stopw×ATR）、+beR 减半仓+保本提醒、剩余半仓跟踪止盈位（需 openedAt，自持仓期 MFE 回撤 trail R）、时间退出窗口提醒、名义/保证金/风险金额（需 qty；有杠杆时按 entry/lev 算保证金与占保证金比例）、**强平风险**（需 leverage>1：隔离保证金近似强平价 = entry×(1∓1/lev)，止损越过强平价→danger"先被强平"，止损距离≥强平距离 80%→warn 插针缓冲警告）、顺方向最近关键位止盈参考。走 kline_cache 400 根 + full_analysis，校验：stop 方向合法性 400、leverage 范围 422
 - **无实时行情 WS**（2026-08-22 起删除）：数据统一走手动刷新 / 5 分钟自动刷新
+- `GET /api/orderbook?symbol`（2026-08-24 新增）→ `{symbol, source('binance_perp'|'gateio_perp'|'binance_spot'), mid, bestBid, bestAsk, spreadBps, topImbalance(前20档失衡-1~1), bands[{bandPct(0.1/0.25/0.5/1), bidUsd, askUsd, imbalance}], walls[{side,price,usd,distBps}](单档>同带中位5倍), levels, note}`——**来源优先级链（2026-08-24 二次修订）**：币安官方合约 depth（可达时最优流动性）→ Gate.io 合约聚合盘（quanto乘数换算USD）→ 币安现货镜像 depth（标注"现货盘"）；60s 内存缓存；快照口径（无实时流）
+- `GET /api/liquidations?symbol`（2026-08-24 新增）→ `{long24hUsd, short24hUsd, total24hUsd, longShortRatio, percentileVsYear(今日累计/一年最大值), history[{time,longUsd,shortUsd}]×48h, estimated[{leverage(10/25/50/100), longLiq, shortLiq}], price, source('gateio'|null), note}`——**数据源为 Gate.io contract_stats 的 long_liq_usd/short_liq_usd 聚合**（真实逐笔强平 feed 接口需签名鉴权不可用，也是唯一免费清算聚合源）；**Gate.io 不可达时多空清算如实置 null**（total24hUsd/source=null，note 说明），估算强平位仍可用（=现价×(1∓1/lev) 隔离近似，只需价格）；依赖 derivs_store 回填
+- `GET /api/onchain`（2026-08-24 新增）→ `{btc{hashrate, hashrateChg30d, mempoolTxs, mempoolVsize, fees{fastest,halfHour,hour,economy}, difficulty{progressPct,difficultyChangePct,remainingBlocks}, activeAddresses, activeAddrAvg30d}, sources[], unavailable, updatedAt}`——mempool.space（费率/内存池/算力/难度周期）+ blockchain.info charts（30d 算力/活跃地址/交易数，sampled 值是 {x,y} 对象需取 y）；10min 内存缓存；**交易所净流入/稳定币流向如实置空**（付费源不可达），不做编造
+- `GET /api/macro`（2026-08-24 新增）→ `{series[{key(ndx/dxy/gold/vix/tnx/mstr/coin), name, last, chg1d/7d/30d, spark[45]}], correlations[{corr30/60/90, beta60}]（与 BTC 日收益 Pearson，本地 1d K线 400 根对齐）, btc{last}, updatedAt, source}`——Yahoo Finance chart API（**必须带浏览器 UA，否则 429**；全局 asyncio 锁 + ≥1.6s 请求间隔 + query1/query2 轮换 + 3 次退避重试）；日线入 SQLite macro.db（不可变，仅尾部重拉）；响应 30min 内存缓存；首次全量拉 7 个序列约 15s，之后磁盘直读
+- `GET /api/sources`（2026-08-24 新增）→ `{chains{数据类型→{order[],note}}, hostStatus{币安两主机:{down,retryInS}}, note}`——数据源优先级链配置与实时冷却状态诊断（跨环境部署时查看实际生效来源）
+- `GET /api/scan?interval&top(10~80,默认40)`（2026-08-24 新增）→ `{interval, scanned, rows[{symbol,last,chg24h,quoteVolume,score,bias,regime,cvdDiv,hasPlan,topReason}], updatedAt, durationMs, note}`——universe=24h ticker（**币安官方合约 → 现货镜像**优先级链）按成交额排序（剔除稳定币/杠杆币/UP-DOWN），每标的 200 根走 kline_cache 跑完整引擎评分（并发 6）；(interval,top) 结果 5min 缓存；实测首拉 15 标的 6.9s、缓存后 <1s
+- `GET/POST/DELETE /api/journal/trades[,/{id},/{id}/close]`（2026-08-24 新增）→ SQLite journal.db：`POST /trades`（快照 plan 可选，冻结开仓时几何）、`POST /trades/{id}/close {exit, reason(stop/target/trail/time/manual)}`（**平仓时用本地 K 线确定性重放计划**：止损→+beR减半保本→跟踪/目标→时间退出，保守盘口顺序=止损先判；planExit{r,reason,exitPrice,barsHeld,beDone} vs 实际 → adherence followed/deviated：同因或 ±0.5R 内=followed）、`GET /stats`（胜率/非亏损率/合计R/遵循率/分币种分周期）
+- `POST /api/portfolio/advise`（2026-08-24 新增）：body `{positions[{symbol,interval,direction,entry,stop?,qty?,leverage?,openedAt?}]≤20, accountEquity?}` → `{positions[{price,notionalUsd,riskUsd,liqPrice,unrealizedPct}], netUsd, grossUsd, marginUsd, totalRiskUsd, riskPctOfEquity, correlatedPairs(|corr|≥0.7), betas(vs BTC), items[]}`——组合层风控：净/总敞口、集中度>50%警告、两两相关性（本地 1d 90 日）、风险预算占权益 >3%warn/>6%danger
+- **derivatives 响应增强（2026-08-24）**：`topTraderRatio`（Gate.io top_lsr_size 大户持仓多空比）、`fundingHistory`（Gate.io 路径从 contract_stats 的 last_funding_rate 回填 30 期）、`historyStats{days(≤1000), fundingPctl, oiUsdPctl, lsrPctl}`（相对本地持久化历史的分位数；days=时间跨度非行数，funding 事件 8h 间隔混入不影响）、`options` 扩展 `{rr25(25Δ call IV−put IV), maxPain{expiry,strike}(近月有OI到期), termStructure[{expiry,atmIv,rr25,putOi,callOi,pcr}]}`；每次调用把快照写入 derivs.db snapshots 表，且 `ensure_backfill` 按**优先级链回填**：Gate.io contract_stats 1d×1000+1h×720（含清算USD）→ 失败则币安 futures/data（openInterestHist/fundingRate/globalLongShortAccountRatio/takerRatio，无清算；**时间戳毫秒→秒归一化**）入库（6h 增量刷新，同符号并发等待防部分读）；**多源按列 UPSERT 合并**（NULL 不覆盖已有值，同时间戳事件互补）
 - **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`（扫流动性事件：side+outcome reclaimed/broken）、`indicators.cvd[]`（累计主动买卖差，来自 K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`patterns{candles[],charts[]}`、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias,cvdDiv}],alignment}`、`summary.tradePlan{direction,entry,stop,target1(null=跟踪止盈),beTrigger,beR,targetR(null),scaleOut,trailR,stopAtr,depthAtr,texitBars,fillBars,rr(null=跟踪),note}`——**几何按周期分化**（PLAN_GEOMETRY）：1h 0.75×ATR 回踩/2.5×ATR 止损/+0.1R 减半+保本/目标 0.75R/96 根退出（保本优先）；4h 0.75/1.2/+0.5R 减半保本/0.5R 跟踪止盈无固定目标/48 根退出/18 根成交窗口；1d 0.75/1.5/0.5R/0.5R 跟踪/24/9；1w 0.75/1.5/0.5R/0.75R 跟踪/24/8（**PLAN_THRESHOLD**：4h/1d/1w=|score|≥10、1h=25，2026-08-22 第 11 轮校准，见 §9 第 11 轮）
 
 ## 5. 当前进度
@@ -60,7 +76,7 @@
 - **failover 已按用户要求实现**（官方域名优先，失败才走镜像）：`services/binance.py` 主源 4s 短超时 → 失败标记主机冷却 300s（后续请求快速短路）→ 仅 klines/exchangeInfo 回退镜像；合约专属接口无镜像→路由层置 null。实测：首次请求 6s（含探测），冷却期内 1.8s
 
 ### ✅ 前端（frontend/）——已完成，构建与联调通过
-- 全部文件就绪：`src/{main.tsx, App.tsx, App.css, types.ts, vite-env.d.ts, api/client.ts, utils/format.ts, components/{Header,SymbolSearch,ChartPanel,smcOverlays.ts,DecisionCard,TradePlanCard,PositionPanel,DerivativesPanel,VolumeProfilePanel,CalendarPanel,MtfBar,SourceHint}.tsx, utils/alerts.ts}` + `tools/dns-override.cjs`（`src/ws/binanceWs.ts` 已随实时推送模式一并删除）
+- 全部文件就绪：`src/{main.tsx, App.tsx, App.css, types.ts, vite-env.d.ts, api/client.ts, utils/format.ts, components/{Header,SymbolSearch,ChartPanel,smcOverlays.ts,DecisionCard,TradePlanCard,PositionPanel,PortfolioPanel,JournalPanel,DerivativesPanel,VolumeProfilePanel,CalendarPanel,MacroPanel,OnchainPanel,OrderBookPanel,LiquidationPanel,ScannerModal,MtfBar,SourceHint}.tsx, utils/alerts.ts}` + `tools/dns-override.cjs`（`src/ws/binanceWs.ts` 已随实时推送模式一并删除）
 - **我的仓位面板**（2026-08-22 新增）：`components/PositionPanel.tsx`——输入方向/入场价/止损(可选)/数量(可选)/开仓时间(可选)，POST /api/position/advise 获取规则化建议（顺势检查、止损建议、+0.5R 减半保本提醒、跟踪止盈位、时间退出、名义风险金额）；仓位按 symbol 持久化 localStorage `coinlens.position`，数据刷新时自动重新分析
 - `npm.cmd run build` 通过（tsc 零错误）；dev server :5173 全模块编译 200；`/api` 代理到后端验证可用
 - **klinecharts 10.0.2 API 已对照 .d.ts 核对修正**，与 v9 差异点（后续维护必读）：
@@ -82,26 +98,42 @@ $env:NODE_OPTIONS='--require D:\Work\Coin\frontend\tools\dns-override.cjs'; npm.
 ```
 `start-frontend.ps1` 已内置。若未来 npm 报 ECONNREFUSED，先确认该钩子仍生效（IP 可能变化：npmmirror 用 223.5.5.5 解析、npmjs 用 8.8.8.8 解析后更新 cjs 里的 MAP）。
 
+**本机（C:\dev\Coin，2026-08-24）运行环境说明**：
+- Node v22.18.0 位于 `C:\Program Files\nodejs\`；**npm 必须用 `npm.cmd`**（npm.ps1 被执行策略禁止）；本机 registry 未被劫持，无需 dns-override 钩子
+- Python venv 在 `backend/.venv`（3.13）可直接 `.\.venv\Scripts\python.exe main.py` 启动
+- Vite dev 绑定 IPv6 localhost（127.0.0.1 连不上时用 http://localhost:5173）
+
 **本机（D:\Work\Coin，2026-08-21）运行环境说明**：
 - node/npm 不在系统 PATH，Node v22.14.0 位于 `D:\360se6\Application\components\Node\`（含 npm.cmd）；运行前端命令前先 `$env:Path = "D:\360se6\Application\components\Node;$env:Path"`
 - Python 用 `py -3.13`（D:\Users\Administrator\AppData\Local\Programs\Python\Python313）；backend/.venv 已于本机用 3.13 重建并装好依赖
 - pip 在本网络下有间歇性 RST 重试但能装完；npm install 走 dns-override 钩子正常（72 包/34s）
 - 首次在本机跑通：后端 :8000 / 前端 :5173 全部 200，analysis 链路验证 OK（BTC 1h score=60 bullish）
 
-## 6. 网络环境实测结论（重要）
+## 6. 数据源优先级链与网络探测（跨环境自适应，重要）
 
-本机企业网关（Zscaler PAC，代理 127.0.0.1:9000）实测：
-| 源 | 可达 |
-|---|---|
-| fapi.binance.com / api.binance.com / api1 / fstream WS | ❌ 全部超时/RST |
-| **data-api.binance.vision**（现货行情镜像，K线/exchangeInfo） | ✅ |
-| **api.gateio.ws**（现货+**期权**，722 个 BTC 期权合约） | ✅ |
-| data.binance.vision / bybit / okx / kucoin / coingecko | ❌ |
+**设计原则（2026-08-24 用户要求）：不把任何一台机器的探测结论写死在代码里。** 每类数据在运行时按优先级链探测：优先源短超时失败 → 主机冷却 300s（期间快速短路）→ 自动 fallback 到下一源；响应 `source` 字段标注实际来源。`GET /api/sources` 可查看全部链序与主机实时冷却状态。在任何网络环境运行无需改代码：官方可达则用官方（自动全量），不可达自动降级。
 
-推论：
-1. 本网络下 K线走镜像、OI/资金费率/多空比全部 null（合约接口无镜像）→ **衍生品数据恢复方案：二期接 Gate.io 期货+期权**（options OI/IV、合约 ticker），需加数据源适配层
-2. 币安 WS 全被封 → 前端实时行情在当前网络下不可用；备选：轮询镜像 K线 REST（2~5s）或 Gate.io WS（未测试，待验证 `wss://api.gateio.ws/ws/v4/`）
-3. 用户日常网络若可直连币安，代码无需改动（官方优先，自动全量）
+| 数据类型 | 优先级链（运行时探测） | 降级行为 |
+|---|---|---|
+| K线/exchangeInfo | 币安官方合约 fapi → 现货镜像 data-api.binance.vision | 逐类缓存命中率 |
+| 订单簿 | 币安官方合约 depth → **Gate.io 合约聚合盘** → 币安现货镜像 depth | 最后档标注"现货盘，杠杆盘口可能不同" |
+| 衍生品快照 | 币安官方合约统计 → Gate.io futures+contract_stats | 字段级 null |
+| 衍生品历史/分位数 | Gate.io contract_stats（含清算USD）→ 币安 futures/data（OI/费率/多空比，无清算） | derivs.db 多源按列 UPSERT 合并 |
+| 清算聚合 | Gate.io contract_stats（唯一免费源） | 多空清算置空（不编造），杠杆强平位仍可用（只需价格） |
+| 全市场扫描 ticker | 币安官方合约 24hr → 现货镜像 24hr | — |
+| 链上 | mempool.space + blockchain.info（互补） | 字段级降级 |
+| 宏观日线 | Yahoo chart API（唯一可用源） | 序列置空 |
+
+**C:\dev\Coin 本机（Zscaler 企业网，2026-08-24 实测，仅作参考非结论）：**
+- fapi/api.binance.com：HTTP 451（区域封锁）→ 实际生效源=镜像+Gate.io
+- data-api.binance.vision（K线/exchangeInfo/depth/ticker24hr）：✅
+- api.gateio.ws（现货+期货+期权；order_book/contract_stats[liq_usd/top_lsr/funding]/options tickers）：✅；liquidation_orders/public_liq_orders 需 KEY 签名 ❌
+- mempool.space + api.blockchain.info charts（sampled 返回 {x,y} 对象）：✅
+- query1/query2.finance.yahoo.com：⚠️ 必须带浏览器 UA（否则稳定 429）+ ≥1.6s 间隔 + 双主机轮换 + 退避
+- stooq.com/pl CSV：❌ 带 UA 也返回 HTML（服务端已下线，非网络原因）；blockchair：~10 请求即 430 黑名单；bybit/okx/kucoin/coingecko/coincap/data.binance.vision：❌
+- 交易所净流入/稳定币流向等实体标签数据无免费可达源（付费源不可达），产品如实置空
+
+推论：本网络下实际生效——K线走镜像、订单簿走 Gate.io、衍生品/清算走 Gate.io、链上走 mempool+blockchain.info、宏观走 Yahoo（带 UA）。用户日常网络若可直连币安，同代码自动切回官方全量源。
 
 ## 7. 下一步（按序）
 
@@ -118,6 +150,36 @@ $env:NODE_OPTIONS='--require D:\Work\Coin\frontend\tools\dns-override.cjs'; npm.
 11. ~~用户浏览器验收增强版 UI~~（部分：用户早期反馈"UI 不错"；增强版待刷新 http://localhost:5173 复核——多周期条、交易计划卡含保本移损行与回测统计、期权卡、CVD 副图、动态 POC 线、预警铃铛、左上角"加载更多历史"按钮、**我的仓位面板**）
 12. ~~提交首次 git commit~~ ✅（2026-08-21 `8ca7bd7`，62 文件：后端+前端+测试+文档+启动脚本；.venv/node_modules/dist/缓存已忽略）
 13. 已知限制（后续迭代）：a) ~~滚动无历史分页~~ ✅（2026-08-21 已实现，2026-08-22 修正语义并加按钮：klinecharts 左移加载是 **type='forward'**（timestamp=最旧一根、返回数据前插）而非 backward；init callback 的 more 必须传 `{forward:true}` 否则两个方向的分页都被禁用——这是上一版"左移不加载"的根因。图表左上角新增「⟵ 加载更多历史」按钮（scrollToDataIndex(0) 触发库内部分页），滚动到最左缘也会自动加载，每页 500 根；历史 K 线走 kline_cache 磁盘缓存，回测预热过的窗口翻页 0.03s）；b) ~~轮询延迟~~（已被 2026-08-22 数据模式取代：无实时推送，最长延迟=自动刷新间隔 5min）；c) 图表形态识别是启发式（双顶/头肩/三角），置信度仅供参考；d) 事件日历为本地手动维护；e) **策略优化已终止**（第 11b 轮，结论见 §9——生产配置固化，不再调参）；后续若恢复优化，方向为加入美股/加密相关标的（MSTR/COIN/NDX，Yahoo/Stooq 数据源已探测可达）
+14. ~~机构级差距分析 → 九大模块补全~~ ✅（2026-08-24，见「2026-08-24 机构级升级」节：订单簿微观结构/清算/链上/宏观/衍生品持久化/扫描器/交易日记/期权扩展/组合风控）
+15. 用户浏览器验收机构级 UI（待办）：刷新 http://localhost:5173 复核——Header「⚡扫描」按钮（全市场排序弹窗）、右侧栏三个 Tab（决策/市场数据/交易）、市场数据 Tab（宏观联动表/链上/订单簿失衡条+大单墙/清算+杠杆地图）、交易 Tab（组合风控聚合/仓位/日记+计划遵循率）、衍生品面板新增分位数与 RR25/Max Pain
+
+### 2026-08-24 机构级升级（第九轮，差距分析驱动的九个模块）
+
+背景：对照机构交易助手标准做差距分析（数据广度/微观结构/组合风控/执行闭环四层缺口），用户拍板全部实现。网络重新探测结论变化见 §6 更新。
+
+**后端新增**（全部验证 200）：
+- `services/microstructure.py` + `/api/orderbook`：**优先级链=币安官方合约 depth → Gate.io 合约聚合盘（quanto 乘数换算 USD）→ 币安镜像现货 depth**（2026-08-24 二次修订，跨环境自适应）；输出点差/前 20 档失衡/±0.1~1% 四档深度带失衡/大单墙（单档>同带中位 5 倍）；60s 缓存
+- `services/liquidations.py` + `/api/liquidations`：**Gate.io contract_stats 的 long/short_liq_usd 聚合**（真实逐笔强平 feed 需签名不可用——这是能拿到的最接近 Coinglass 的口径，也是唯一免费源）；24h 多空清算+比例、48h 小时序列、今日累计相对一年最大值的烈度百分位、10/25/50/100× 杠杆的估算强平位（隔离近似，明确标注）；**Gate 不可达时多空清算置 null、杠杆图仍可用**
+- `services/derivs_store.py`：衍生品历史 SQLite（derivs.db）——**优先级链回填：Gate.io contract_stats 1d×1000 + 1h×720（含清算USD）→ 失败则币安 futures/data（OI/费率/多空比/主动比，无清算；毫秒→秒归一化）**（每符号 6h 增量刷新；同符号并发 backfill 等待防部分读）；多源按列 UPSERT 合并（NULL 不覆盖）；每次 /api/derivatives 快照入 snapshots 表；`history_stats` 输出 funding/OI/LSR 相对持久化历史的分位数（实测 BTC：funding 82.4%分位、OI 92.2%分位——机构语境"处于一年高位"）
+- `services/onchain.py` + `/api/onchain`：mempool.space（费率/内存池/3d算力/难度调整周期）+ blockchain.info charts（30d 算力/活跃地址/交易数）；**注意 sampled=true 返回 {x,y} 对象**（首版踩坑 500）；交易所净流入/稳定币流向付费源不可达，如实置空
+- `services/macro.py` + `/api/macro`：Yahoo chart API（ndx/dxy/gold/vix/tnx/mstr/coin 七序列，各自带 fallback 符号如 ^NDX→NQ=F）；**必须浏览器 UA**（无 UA 稳定 429）+ 全局 asyncio 锁 1.6s 间隔 + query1/query2 轮换 + 3 次退避；日线入 macro.db 不可变缓存（仅尾部>2 天重拉）；与 BTC 日收益（kline_cache 1d×400）对齐算 30/60/90 日 Pearson 相关 + 60 日 beta；首次全量 ~15s（7 请求×间隔），之后磁盘直读+30min 响应缓存
+- `services/scanner.py` + `/api/scan`：24h ticker 全量（**币安官方合约 → 现货镜像**优先级链，内存缓存 2min）→ 剔除稳定币/杠杆币（UP/DOWN/BULL/BEAR/1L-3L/1S-3S）→ 按 24h 成交额取前 N → 每标的 kline_cache 200 根跑完整引擎（并发 6）→ 按 |score| 排序输出（含 hasPlan/cvdDiv/topReason）；(interval,top) 结果 5min 缓存
+- `services/journal_store.py` + `/api/journal/*`：交易日记 SQLite（journal.db）+ **计划确定性重放**（平仓时从开仓时间用本地 K 线重放冻结几何：止损→+beR 减半保本→trail 回撤→目标→时间退出，同根 K 线保守盘口顺序=先判止损）；planExit{r,reason,exitPrice,barsHeld,beDone} 与实际离场对比 → adherence（同因或 ±0.5R 内=followed）；/stats 汇总胜率/非亏损率/合计 R/遵循率/分币种
+- `routers/portfolio.py` + `/api/portfolio/advise`：组合层聚合——净/总敞口、保证金、止损风险预算（无止损时用 PLAN_GEOMETRY stopw×ATR 建议）、集中度>50%、两两相关性 |corr|≥0.7 警告（本地 1d×90）、对 BTC beta、风险占权益 >3%warn/>6%danger
+- `services/gateio.py` 扩展：`order_book()`（聚合盘+乘数缓存 1h）、`contract_stats()`（原始口径）、`contract_multiplier()`；`futures_snapshot` 增 topTraderRatio（大户持仓多空比 top_lsr_size）+ fundingHistory（last_funding_rate 回填）；`options_snapshot` 重写——每到期月 ATM IV + **25Δ RR**（|delta| 最接近 0.25 的 call−put IV）+ 分月 PCR/OI + **期限结构 termStructure[]** + **Max Pain**（近月有 OI 到期、最小化期权方总赔付的行权价）
+- `services/binance.py` 增 `get_mirror_json()`：白名单镜像端点（depth/ticker24hr），沿用主机冷却机制；2026-08-24 二次修订：`get_depth(allow_mirror=)`（订单簿链序用）、`get_ticker24h()`（fapi→镜像 fallback 表）、`host_status()`（/api/sources 诊断用）
+
+**前端新增**（tsc 零错误、代理全链路 200）：
+- **侧栏三 Tab**（决策/市场数据/交易，sticky 标签栏，localStorage `coinlens.tab` 持久化）——解决面板数量爆炸后的导航问题
+- `Header` 新增「⚡扫描」按钮 → `ScannerModal`（880px 弹窗：市场宽度统计、过滤框、评分排序表、CVD 背离列、计划标记列、当前标的高亮，点击行切换标的，Esc 关闭）
+- `MacroPanel`（7 资产×涨跌/30日相关/beta/迷你走势线，相关性着色 |corr|≥0.7 加粗）、`OnchainPanel`（算力/内存池/费率/活跃地址/难度周期）、`OrderBookPanel`（四档深度带双向失衡条+大单墙列表）、`LiquidationPanel`（24h 多空清算+烈度百分位+48h 双向柱图+杠杆强平位表）
+- `PortfolioPanel`（读取 localStorage 全部已存仓位聚合：净/总敞口/风险预算/集中度/相关性警告/beta；权益输入持久化 `coinlens.equity`）、`JournalPanel`（「按当前计划记录」一键快照 tradePlan/手动记录/平仓并复盘（含计划重放结果展示）/统计条（胜率/合计R/遵循率）/删除）
+- `DerivativesPanel` 增强：OI/资金费率附分位数（"92%分位"）、大户持仓比卡片、期权卡新增 25Δ RR 与 Max Pain
+- 数据流：refreshData 统一刷新 analysis+derivatives+backtest+orderbook+liquidations+onchain+macro（后两个服务端有 10/30min 缓存，实际不重复拉）；symbol 切换时 orderbook/liquidations 重置重拉
+
+**实测性能**：orderbook 1.7s / liquidations 首拉 3s（含回填等待）/ onchain 3.9s / macro 首拉 15.2s→缓存后 <1s / scan 首拉 15 标的 6.9s→缓存 <1s / 冷启动符号 derivatives+backfill 36.8s（一次性，之后 5.8s 热路径）
+
+**诚实口径声明（UI tooltip 均已标注）**：清算数据是 Gate.io 统计口径而非逐笔 feed；订单簿是快照而非流；估算强平位未计维持保证金；链上实体标签数据（净流入/稳定币）不可达——不编造
 
 ### 2026-08-22 历史数据与回测采样增强（第三轮）
 - **K 线本地磁盘缓存**（用户要求："以前的数据加载过之后是不会变化了"）：`services/kline_cache.py`，SQLite（backend/data/cache/klines.db，WAL，PK=symbol+interval+ts）。请求 `limit` 根、终点 `end_time` 的窗口时：先查缓存并做**连续性检测**（顶部紧邻 end_time、内部间隔恒等于 interval 步长），全覆盖则直接返回；否则并发 4 路向币安分页拉缺失段（每页 1000 根按时间窗平铺，页间无重叠/空洞）→ 入库 → 重读合并窗口。end_time=None（最新）时顶页永远实拉（新 K 线会变）并回种缓存。实测：同参数 4.0s→0.036s；回测预热后图表翻页 0.03s。注意：缓存不区分合约/现货源，冲突时后写覆盖（价差极小，可接受）
@@ -154,8 +216,8 @@ $env:NODE_OPTIONS='--require D:\Work\Coin\frontend\tools\dns-override.cjs'; npm.
 
 ### 后续迭代方向（未排期）
 - AI 盘面解读（LLM 汇总各维度成自然语言报告）
-- 宏观联动（DXY/纳指相关性）、策略回测平台、交易日记
-- 可见区域成交量分布、按 interval 动态轮询周期、滚动历史分页
+- 策略回测平台、可见区域成交量分布、按 interval 动态轮询周期
+- ~~宏观联动（DXY/纳指相关性）、交易日记~~ ✅ 2026-08-24 已实现（macro.py + journal_store.py，见 §7 机构级升级）
 
 ## 9. 决策引擎回测校准记录（2026-08-21，重要结论）
 

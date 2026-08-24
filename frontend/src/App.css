@@ -1294,3 +1294,603 @@ body {
   font-size: 11px;
   color: var(--text-dim);
 }
+
+/* ---------- sidebar tabs ---------- */
+
+.sidebar-tabs {
+  display: flex;
+  gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--card-border);
+  border-radius: 8px;
+  padding: 4px;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.sidebar-tab {
+  flex: 1;
+  background: transparent;
+  color: var(--text-dim);
+  border: none;
+  border-radius: 6px;
+  padding: 6px 0;
+  cursor: pointer;
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-tab:hover {
+  color: var(--text);
+}
+
+.sidebar-tab.active {
+  color: var(--text);
+  background: rgba(41, 98, 255, 0.2);
+}
+
+/* ---------- order book panel ---------- */
+
+.ob-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.ob-band-row {
+  display: grid;
+  grid-template-columns: 52px 1fr 1fr 84px;
+  gap: 6px;
+  align-items: center;
+  font-size: 12px;
+  padding: 4px 0;
+  border-top: 1px solid var(--card-border);
+}
+
+.ob-band-head {
+  color: var(--text-dim);
+  font-size: 11px;
+  border-top: none;
+}
+
+.ob-band-pct {
+  color: var(--text-dim);
+}
+
+.ob-imb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ob-imb-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg);
+  overflow: hidden;
+  display: flex;
+}
+
+.ob-imb-fill {
+  height: 100%;
+  border-radius: 3px;
+}
+
+.ob-imb-bid {
+  background: var(--up);
+  margin-left: auto;
+}
+
+.ob-imb-ask {
+  background: var(--down);
+}
+
+.ob-imb-val {
+  font-size: 11px;
+  width: 34px;
+  text-align: right;
+}
+
+.ob-imb-na {
+  color: var(--text-dim);
+}
+
+.ob-walls {
+  margin-top: 10px;
+}
+
+.ob-wall-row {
+  display: grid;
+  grid-template-columns: 40px 1fr 1fr 56px;
+  gap: 6px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+
+.ob-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ---------- liquidation panel ---------- */
+
+.liq-chart {
+  width: 100%;
+  height: 56px;
+}
+
+.liq-bar-long {
+  fill: rgba(239, 83, 80, 0.75);
+}
+
+.liq-bar-short {
+  fill: rgba(38, 166, 154, 0.75);
+}
+
+.liq-map {
+  margin-top: 10px;
+}
+
+.liq-map .ob-band-row {
+  grid-template-columns: 52px 1fr 1fr;
+}
+
+.deriv-pctl-note {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+/* ---------- on-chain panel ---------- */
+
+.onchain-diff {
+  margin-top: 10px;
+}
+
+.onchain-diff-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  padding-top: 6px;
+}
+
+.onchain-note {
+  margin-top: 6px;
+}
+
+/* ---------- macro panel ---------- */
+
+.macro-table {
+  font-size: 12px;
+}
+
+.macro-row {
+  display: grid;
+  grid-template-columns: 78px 62px 52px 52px 50px 40px 56px;
+  gap: 4px;
+  align-items: center;
+  padding: 5px 0;
+  border-top: 1px solid var(--card-border);
+}
+
+.macro-row:first-child {
+  border-top: none;
+}
+
+.macro-head {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.macro-name {
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.macro-spark-cell {
+  height: 26px;
+}
+
+.macro-spark {
+  width: 100%;
+  height: 100%;
+}
+
+.macro-spark-up path {
+  stroke: var(--up);
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.macro-spark-down path {
+  stroke: var(--down);
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.text-down-strong {
+  color: var(--down);
+  font-weight: 700;
+}
+
+.text-up-strong {
+  color: var(--up);
+  font-weight: 700;
+}
+
+/* ---------- scanner modal ---------- */
+
+.scan-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 500;
+}
+
+.scan-modal {
+  width: min(880px, calc(100vw - 32px));
+  height: min(640px, calc(100vh - 48px));
+  background: var(--card);
+  border: 1px solid var(--card-border);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.scan-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--card-border);
+}
+
+.scan-title {
+  font-weight: 700;
+  font-size: 15px;
+  white-space: nowrap;
+}
+
+.scan-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-dim);
+}
+
+.scan-filter {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 10px;
+  font-size: 13px;
+  outline: none;
+  min-width: 100px;
+}
+
+.scan-refresh,
+.scan-close {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.scan-refresh:hover:not(:disabled),
+.scan-close:hover {
+  color: var(--text);
+}
+
+.scan-refresh:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.scan-breadth {
+  padding: 8px 14px;
+  font-size: 12px;
+  color: var(--text-dim);
+  border-bottom: 1px solid var(--card-border);
+}
+
+.scan-updated {
+  float: right;
+}
+
+.scan-table-wrap {
+  flex: 1;
+  overflow: auto;
+}
+
+.scan-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.scan-table th {
+  position: sticky;
+  top: 0;
+  background: var(--card);
+  text-align: left;
+  padding: 7px 10px;
+  color: var(--text-dim);
+  font-weight: 500;
+  font-size: 11px;
+  border-bottom: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+
+.scan-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--card-border);
+  white-space: nowrap;
+}
+
+.scan-row {
+  cursor: pointer;
+}
+
+.scan-row:hover {
+  background: rgba(41, 98, 255, 0.1);
+}
+
+.scan-row-current {
+  background: rgba(41, 98, 255, 0.08);
+}
+
+.scan-symbol {
+  font-weight: 700;
+}
+
+.scan-current-tag {
+  margin-left: 6px;
+  font-size: 10px;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+.scan-bias {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 8px;
+  font-size: 11px;
+}
+
+.scan-bull {
+  background: rgba(38, 166, 154, 0.18);
+  color: var(--up);
+}
+
+.scan-bear {
+  background: rgba(239, 83, 80, 0.18);
+  color: var(--down);
+}
+
+.scan-neutral {
+  background: rgba(139, 148, 158, 0.15);
+  color: var(--text-dim);
+}
+
+.scan-reason {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-dim);
+}
+
+.scan-error {
+  padding: 20px;
+}
+
+.scan-note {
+  padding: 8px 14px;
+  font-size: 11px;
+  color: var(--text-dim);
+  border-top: 1px solid var(--card-border);
+}
+
+.scan-btn {
+  white-space: nowrap;
+}
+
+/* ---------- journal panel ---------- */
+
+.journal-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.journal-add-btn {
+  background: rgba(41, 98, 255, 0.25);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.journal-add-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.journal-add-manual {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.journal-add-manual:hover {
+  color: var(--text);
+}
+
+.journal-note {
+  flex: 1;
+  min-width: 60px;
+  background: var(--bg);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 8px;
+  font-size: 12px;
+  outline: none;
+}
+
+.journal-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 8px 10px;
+  background: var(--bg);
+  border-radius: 6px;
+  margin-bottom: 10px;
+}
+
+.journal-stats b {
+  color: var(--text);
+}
+
+.journal-section {
+  margin-bottom: 10px;
+}
+
+.journal-trade {
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.journal-trade-head {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.journal-del {
+  margin-left: auto;
+  color: var(--text-dim);
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+.journal-del:hover {
+  color: var(--down);
+}
+
+.journal-close-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.journal-close-row input,
+.journal-close-row select {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 4px 6px;
+  font-size: 12px;
+  outline: none;
+  min-width: 0;
+}
+
+.journal-close-row button {
+  background: rgba(41, 98, 255, 0.25);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.journal-plan-exit {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.journal-trade-closed {
+  opacity: 0.85;
+}
+
+/* ---------- portfolio panel ---------- */
+
+.pf-equity-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.pf-equity-row input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 5px 10px;
+  font-size: 12px;
+  outline: none;
+}
+
+.pf-equity-row button {
+  background: transparent;
+  color: var(--text-dim);
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 5px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.pf-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.pf-positions {
+  margin-top: 8px;
+}
+
+.pf-pos-row {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  padding: 4px 0;
+  border-top: 1px solid var(--card-border);
+  flex-wrap: wrap;
+}

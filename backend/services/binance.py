@@ -21,10 +21,35 @@ from config import BINANCE_FAPI, BINANCE_SPOT_MIRROR
 _PRIMARY_TIMEOUT = httpx.Timeout(4.0)
 _FALLBACK_TIMEOUT = httpx.Timeout(12.0)
 
+# mirror fallback paths for market-data endpoints (official host first,
+# mirror only when the official host is unreachable — adapts to any network)
 _FALLBACK_PATHS = {
     "/fapi/v1/klines": "/api/v3/klines",
     "/fapi/v1/exchangeInfo": "/api/v3/exchangeInfo",
+    "/fapi/v1/ticker/24hr": "/api/v3/ticker/24hr",
 }
+
+# mirror-only market-data endpoints (no fapi equivalent reachable)
+_MIRROR_ONLY = {
+    "/api/v3/depth": True,
+    "/api/v3/ticker/24hr": True,
+}
+
+
+async def get_mirror_json(path: str, params: dict | None = None) -> Any:
+    """Fetch a mirror-only market-data endpoint (spot depth / 24h tickers)."""
+    if path not in _MIRROR_ONLY:
+        raise ValueError(f"path not allowed on mirror: {path}")
+    url = f"{BINANCE_SPOT_MIRROR}{path}"
+    if _host_down(BINANCE_SPOT_MIRROR):
+        raise HTTPException(status_code=502, detail="Binance mirror in cooldown")
+    try:
+        data = await _fetch(url, params, _FALLBACK_TIMEOUT)
+        _mark_host_ok(BINANCE_SPOT_MIRROR)
+        return data
+    except Exception as exc:  # noqa: BLE001
+        _mark_host_down(BINANCE_SPOT_MIRROR)
+        raise HTTPException(status_code=502, detail=f"Binance mirror failed: {exc}") from exc
 
 # host -> monotonic timestamp after which it may be retried
 _host_down_until: dict[str, float] = {}
@@ -146,3 +171,46 @@ async def get_long_short_ratio(symbol: str, period: str = "1h", limit: int = 30)
 
 async def get_taker_ratio(symbol: str, period: str = "1h", limit: int = 30) -> list:
     return await _get("/futures/data/takerlongshortRatio", {"symbol": symbol, "period": period, "limit": limit})
+
+
+async def get_ticker24h() -> list:
+    """24h tickers for all symbols: official futures first, spot mirror fallback."""
+    return await _get("/fapi/v1/ticker/24hr", cache_ttl=120)
+
+
+async def get_depth(symbol: str, limit: int = 100, allow_mirror: bool = True) -> tuple[dict, str]:
+    """Order book snapshot with origin: official USDT-M futures depth first,
+    then (optionally) the spot mirror. Returns (book, source) where source is
+    'binance_perp' | 'binance_spot'; sizes are in base-coin units for both.
+    Callers that rank another perp source above the spot mirror pass
+    allow_mirror=False and handle the fallback themselves."""
+    params = {"symbol": symbol.upper(), "limit": limit}
+    if not _host_down(BINANCE_FAPI):
+        try:
+            data = await _fetch(f"{BINANCE_FAPI}/fapi/v1/depth", params, _PRIMARY_TIMEOUT)
+            _mark_host_ok(BINANCE_FAPI)
+            return data, "binance_perp"
+        except Exception:  # noqa: BLE001 - fall through to the mirror
+            _mark_host_down(BINANCE_FAPI)
+    if allow_mirror and not _host_down(BINANCE_SPOT_MIRROR):
+        try:
+            data = await _fetch(f"{BINANCE_SPOT_MIRROR}/api/v3/depth", params, _FALLBACK_TIMEOUT)
+            _mark_host_ok(BINANCE_SPOT_MIRROR)
+            return data, "binance_spot"
+        except Exception as exc:  # noqa: BLE001
+            _mark_host_down(BINANCE_SPOT_MIRROR)
+            raise HTTPException(status_code=502, detail=f"Binance depth sources failed: {exc}") from exc
+    raise HTTPException(status_code=502, detail="Binance depth sources unreachable (cooldown)")
+
+
+def host_status() -> dict:
+    """Live cooldown state per host (for /api/sources diagnostics)."""
+    out = {}
+    now = time.monotonic()
+    for host in (BINANCE_FAPI, BINANCE_SPOT_MIRROR):
+        until = _host_down_until.get(host, 0.0)
+        out[host] = {
+            "down": until > now,
+            "retryInS": round(max(0.0, until - now)) if until > now else 0,
+        }
+    return out

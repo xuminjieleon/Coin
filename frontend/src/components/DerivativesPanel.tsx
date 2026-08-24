@@ -113,6 +113,8 @@ export default function DerivativesPanel({ derivatives, symbol }: Props) {
             className={`deriv-sub ${(derivatives.oiChangePct24h ?? 0) >= 0 ? 'text-up' : 'text-down'}`}
           >
             24h {formatPct(derivatives.oiChangePct24h)}
+            {derivatives.historyStats?.oiUsdPctl != null &&
+              ` · ${derivatives.historyStats.oiUsdPctl.toFixed(0)}%分位`}
           </div>
         </div>
         <div className="deriv-item">
@@ -120,7 +122,11 @@ export default function DerivativesPanel({ derivatives, symbol }: Props) {
           <div className={`deriv-value ${fundingHot ? 'text-down' : fundingCold ? 'text-up' : ''}`}>
             {formatFunding(funding)}
           </div>
-          <div className="deriv-sub">{fundingHot ? '过热' : fundingCold ? '偏冷' : '正常'}</div>
+          <div className="deriv-sub">
+            {fundingHot ? '过热' : fundingCold ? '偏冷' : '正常'}
+            {derivatives.historyStats?.fundingPctl != null &&
+              ` · ${derivatives.historyStats.fundingPctl.toFixed(0)}%分位`}
+          </div>
         </div>
         <div className="deriv-item">
           <div className="deriv-label">多空比</div>
@@ -128,11 +134,16 @@ export default function DerivativesPanel({ derivatives, symbol }: Props) {
           <div className="deriv-sub">全局账户</div>
         </div>
         <div className="deriv-item">
-          <div className="deriv-label">主动买卖比</div>
-          <div className="deriv-value">{formatRatio(derivatives.takerBuySellRatio)}</div>
-          <div className="deriv-sub">Taker</div>
+          <div className="deriv-label">大户持仓比</div>
+          <div className="deriv-value">{formatRatio(derivatives.topTraderRatio ?? null)}</div>
+          <div className="deriv-sub">Top 交易员多/空</div>
         </div>
       </div>
+      {derivatives.historyStats && derivatives.historyStats.days > 0 && (
+        <div className="deriv-pctl-note">
+          分位基于本地持久化的 {derivatives.historyStats.days} 天 Gate.io 合约统计（每 6 小时增量回填）
+        </div>
+      )}
       {derivatives.fundingHistory && derivatives.fundingHistory.length > 0 && (
         <div className="funding-chart-wrap">
           <div className="section-label">资金费率历史（近30期）</div>
@@ -169,6 +180,38 @@ export default function DerivativesPanel({ derivatives, symbol }: Props) {
                   : (derivatives.options.putCallRatio ?? 1) < 0.8
                     ? '看涨偏重'
                     : '均衡'}
+              </div>
+            </div>
+            <div className="deriv-item">
+              <div className="deriv-label">25Δ 风险逆转</div>
+              <div
+                className={`deriv-value ${(derivatives.options.rr25 ?? 0) > 0.02 ? 'text-up' : (derivatives.options.rr25 ?? 0) < -0.02 ? 'text-down' : ''}`}
+              >
+                {derivatives.options.rr25 != null
+                  ? `${(derivatives.options.rr25 * 100).toFixed(1)}%`
+                  : '--'}
+              </div>
+              <div className="deriv-sub">
+                {derivatives.options.rr25 == null
+                  ? '看涨IV−看跌IV'
+                  : (derivatives.options.rr25 ?? 0) > 0.02
+                    ? '偏买Call（上行情绪）'
+                    : (derivatives.options.rr25 ?? 0) < -0.02
+                      ? '偏买Put（下防情绪）'
+                      : '均衡'}
+              </div>
+            </div>
+            <div className="deriv-item">
+              <div className="deriv-label">Max Pain</div>
+              <div className="deriv-value">
+                {derivatives.options.maxPain != null
+                  ? derivatives.options.maxPain.strike.toLocaleString('en-US', { maximumFractionDigits: 1 })
+                  : '--'}
+              </div>
+              <div className="deriv-sub">
+                {derivatives.options.maxPain != null
+                  ? `到期 ${new Date(derivatives.options.maxPain.expiry).toLocaleDateString('zh-CN')}·卖方最大痛点`
+                  : '近月 OI 不足'}
               </div>
             </div>
           </div>

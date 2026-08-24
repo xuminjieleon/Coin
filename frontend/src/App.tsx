@@ -5,23 +5,41 @@ import MtfBar from './components/MtfBar'
 import DecisionCard from './components/DecisionCard'
 import TradePlanCard from './components/TradePlanCard'
 import PositionPanel from './components/PositionPanel'
+import PortfolioPanel from './components/PortfolioPanel'
+import JournalPanel from './components/JournalPanel'
 import DerivativesPanel from './components/DerivativesPanel'
 import VolumeProfilePanel from './components/VolumeProfilePanel'
 import CalendarPanel from './components/CalendarPanel'
+import OrderBookPanel from './components/OrderBookPanel'
+import LiquidationPanel from './components/LiquidationPanel'
+import OnchainPanel from './components/OnchainPanel'
+import MacroPanel from './components/MacroPanel'
+import ScannerModal from './components/ScannerModal'
 import {
   fetchAnalysis,
   fetchBacktest,
   fetchDerivatives,
+  fetchLiquidations,
+  fetchMacro,
+  fetchOnchain,
+  fetchOrderbook,
   type AnalysisResponse,
   type BacktestResult,
   type Derivatives,
+  type Liquidations,
+  type MacroResponse,
+  type OnchainResponse,
+  type OrderBook,
 } from './api/client'
 import { AlertEngine, pushNotification, requestNotifyPermission, type AlertMessage } from './utils/alerts'
 import { DEFAULT_INTERVAL, DEFAULT_SYMBOL, type Interval } from './types'
 
 const STORAGE_KEY = 'coinlens.symbol'
 const AUTO_REFRESH_KEY = 'coinlens.autoRefresh'
+const TAB_KEY = 'coinlens.tab'
 const AUTO_REFRESH_MS = 5 * 60 * 1000
+
+type SidebarTab = 'decision' | 'market' | 'trading'
 
 function loadSymbol(): string {
   try {
@@ -39,6 +57,16 @@ function loadAutoRefresh(): boolean {
   }
 }
 
+function loadTab(): SidebarTab {
+  try {
+    const t = localStorage.getItem(TAB_KEY)
+    if (t === 'market' || t === 'trading') return t
+  } catch {
+    /* ignore */
+  }
+  return 'decision'
+}
+
 const TOAST_TTL_MS = 10_000
 
 export default function App() {
@@ -47,6 +75,12 @@ export default function App() {
   const [analysis, setAnalysis] = useState<AnalysisResponse | null>(null)
   const [derivatives, setDerivatives] = useState<Derivatives | null>(null)
   const [backtest, setBacktest] = useState<BacktestResult | null>(null)
+  const [orderbook, setOrderbook] = useState<OrderBook | null>(null)
+  const [liquidations, setLiquidations] = useState<Liquidations | null>(null)
+  const [onchain, setOnchain] = useState<OnchainResponse | null>(null)
+  const [macro, setMacro] = useState<MacroResponse | null>(null)
+  const [tab, setTab] = useState<SidebarTab>(loadTab)
+  const [scanOpen, setScanOpen] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [autoRefresh, setAutoRefresh] = useState<boolean>(loadAutoRefresh)
@@ -120,8 +154,37 @@ export default function App() {
     }
   }, [])
 
+  const loadMarketPanels = useCallback(async () => {
+    try {
+      const ob = await fetchOrderbook(symbolRef.current)
+      setOrderbook(ob)
+    } catch {
+      setOrderbook(null)
+    }
+    try {
+      const liq = await fetchLiquidations(symbolRef.current)
+      setLiquidations(liq)
+    } catch {
+      setLiquidations(null)
+    }
+  }, [])
+
+  // global panels (server-cached, cheap): load once + on each refresh pass
+  const loadGlobalPanels = useCallback(async () => {
+    try {
+      setOnchain(await fetchOnchain())
+    } catch {
+      /* keep previous */
+    }
+    try {
+      setMacro(await fetchMacro())
+    } catch {
+      /* keep previous */
+    }
+  }, [])
+
   // Unified refresh (manual button + 5-min auto): analysis, chart tail,
-  // derivatives and backtest in one pass. No real-time push.
+  // derivatives, backtest, order book, liquidations in one pass.
   const refreshData = useCallback(async () => {
     setRefreshing(true)
     try {
@@ -141,7 +204,9 @@ export default function App() {
     }
     void loadDerivatives()
     void loadBacktest()
-  }, [handleAnalysis, loadDerivatives, loadBacktest, emitAlerts])
+    void loadMarketPanels()
+    void loadGlobalPanels()
+  }, [handleAnalysis, loadDerivatives, loadBacktest, loadMarketPanels, loadGlobalPanels, emitAlerts])
 
   // Auto refresh every 5 minutes (timer restarts on symbol/interval change)
   useEffect(() => {
@@ -154,14 +219,31 @@ export default function App() {
   useEffect(() => {
     setAnalysis(null)
     setDerivatives(null)
+    setOrderbook(null)
+    setLiquidations(null)
     loadDerivatives()
     loadBacktest()
+    loadMarketPanels()
     try {
       localStorage.setItem(STORAGE_KEY, symbol)
     } catch {
       /* ignore */
     }
-  }, [symbol, interval, loadDerivatives, loadBacktest])
+  }, [symbol, interval, loadDerivatives, loadBacktest, loadMarketPanels])
+
+  // global panels on mount
+  useEffect(() => {
+    void loadGlobalPanels()
+  }, [loadGlobalPanels])
+
+  const switchTab = useCallback((t: SidebarTab) => {
+    setTab(t)
+    try {
+      localStorage.setItem(TAB_KEY, t)
+    } catch {
+      /* ignore */
+    }
+  }, [])
 
   const toggleAutoRefresh = useCallback(() => {
     setAutoRefresh((prev) => {
@@ -199,6 +281,10 @@ export default function App() {
     analysis && analysis.candles.length > 0
       ? analysis.candles[analysis.candles.length - 1].close
       : null
+  const lastTime =
+    analysis && analysis.candles.length > 0
+      ? analysis.candles[analysis.candles.length - 1].time
+      : null
 
   return (
     <div className="app">
@@ -214,6 +300,7 @@ export default function App() {
         onToggleAlerts={toggleAlerts}
         onSymbol={setSymbol}
         onInterval={setIntervalValue}
+        onScan={() => setScanOpen(true)}
       />
       {error && <div className="error-banner">{error}</div>}
       <MtfBar mtf={analysis?.mtf ?? null} summary={analysis?.summary ?? null} interval={interval} />
@@ -230,22 +317,75 @@ export default function App() {
           />
         </div>
         <aside className="sidebar">
-          <DecisionCard analysis={analysis} backtest={backtest} />
-          <TradePlanCard plan={analysis?.summary.tradePlan ?? null} interval={interval} />
-          <PositionPanel
-            symbol={symbol}
-            interval={interval}
-            analysisTime={analysis?.candles?.length ? analysis.candles[analysis.candles.length - 1].time : null}
-          />
-          <DerivativesPanel derivatives={derivatives} symbol={symbol} />
-          <VolumeProfilePanel
-            profile={analysis?.volumeProfile ?? null}
-            currentPrice={lastClose}
-            symbol={symbol}
-          />
-          <CalendarPanel />
+          <div className="sidebar-tabs">
+            <button
+              className={`sidebar-tab ${tab === 'decision' ? 'active' : ''}`}
+              onClick={() => switchTab('decision')}
+              type="button"
+            >
+              决策
+            </button>
+            <button
+              className={`sidebar-tab ${tab === 'market' ? 'active' : ''}`}
+              onClick={() => switchTab('market')}
+              type="button"
+            >
+              市场数据
+            </button>
+            <button
+              className={`sidebar-tab ${tab === 'trading' ? 'active' : ''}`}
+              onClick={() => switchTab('trading')}
+              type="button"
+            >
+              交易
+            </button>
+          </div>
+          {tab === 'decision' && (
+            <>
+              <DecisionCard analysis={analysis} backtest={backtest} />
+              <TradePlanCard plan={analysis?.summary.tradePlan ?? null} interval={interval} />
+              <DerivativesPanel derivatives={derivatives} symbol={symbol} />
+              <VolumeProfilePanel
+                profile={analysis?.volumeProfile ?? null}
+                currentPrice={lastClose}
+                symbol={symbol}
+              />
+            </>
+          )}
+          {tab === 'market' && (
+            <>
+              <MacroPanel data={macro} />
+              <OnchainPanel data={onchain} />
+              <OrderBookPanel data={orderbook} symbol={symbol} />
+              <LiquidationPanel data={liquidations} symbol={symbol} />
+              <CalendarPanel />
+            </>
+          )}
+          {tab === 'trading' && (
+            <>
+              <PortfolioPanel refreshKey={lastTime} />
+              <PositionPanel
+                symbol={symbol}
+                interval={interval}
+                analysisTime={lastTime}
+              />
+              <JournalPanel
+                symbol={symbol}
+                interval={interval}
+                plan={analysis?.summary.tradePlan ?? null}
+                refreshKey={lastTime}
+              />
+            </>
+          )}
         </aside>
       </div>
+      <ScannerModal
+        open={scanOpen}
+        interval={interval}
+        currentSymbol={symbol}
+        onSelect={setSymbol}
+        onClose={() => setScanOpen(false)}
+      />
       <div className="toast-stack">
         {toasts.map((t) => (
           <div className="toast" key={t.id} onClick={() => dismissToast(t.id)}>
