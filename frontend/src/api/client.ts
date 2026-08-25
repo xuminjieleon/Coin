@@ -627,6 +627,11 @@ export interface JournalStats {
   adherenceRate?: number | null
   bySymbol?: Record<string, number>
   byInterval?: Record<string, number>
+  byExitReason?: Record<string, { count: number; sumR: number; avgR: number; winRate: number }>
+  adherenceEv?: {
+    followed: { count: number; sumR: number; avgR: number } | null
+    deviated: { count: number; sumR: number; avgR: number } | null
+  }
 }
 
 export interface JournalTradeInput {
@@ -676,6 +681,9 @@ export interface PortfolioPositionRow {
   riskUsd: number | null
   liqPrice: number | null
   unrealizedPct: number | null
+  unrealizedR?: number | null
+  barsHeld?: number | null
+  attention?: { level: 'ok' | 'info' | 'warn' | 'danger'; text: string | null } | null
   interval: string
   direction: 'long' | 'short'
 }

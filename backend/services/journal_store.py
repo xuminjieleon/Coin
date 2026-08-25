@@ -272,8 +272,8 @@ async def close_trade(tid: int, exit_price: float, reason: str, closed_at: int |
 def stats() -> dict:
     with _lock:
         cur = _db().execute(
-            "SELECT symbol, interval, direction, r_multiple, adherence, "
-            "(opened_at - created_at) FROM trades WHERE status='closed'")
+            "SELECT symbol, interval, direction, r_multiple, adherence, exit_reason "
+            "FROM trades WHERE status='closed'")
         rows = cur.fetchall()
     closed = len(rows)
     if not closed:
@@ -287,6 +287,29 @@ def stats() -> dict:
     for r in rows:
         by_symbol.setdefault(r[0], []).append(r[3] or 0.0)
         by_interval.setdefault(r[1], []).append(r[3] or 0.0)
+
+    # profit-leak breakdown: where does P&L actually come from / leak to
+    by_reason_vals: dict[str, list[float]] = {}
+    for r in rows:
+        reason = r[5] or "manual"
+        by_reason_vals.setdefault(reason, []).append(r[3] if r[3] is not None else 0.0)
+    by_exit_reason = {}
+    for reason, vals in by_reason_vals.items():
+        by_exit_reason[reason] = {
+            "count": len(vals),
+            "sumR": round(sum(vals), 2),
+            "avgR": round(sum(vals) / len(vals), 3),
+            "winRate": round(sum(1 for v in vals if v > 0) / len(vals) * 100, 1),
+        }
+
+    # adherence EV: the measurable cost of deviating from the plan
+    def _agg(sel: str) -> dict | None:
+        vals = [r[3] for r in rows if r[4] == sel and r[3] is not None]
+        if not vals:
+            return None
+        return {"count": len(vals), "sumR": round(sum(vals), 2),
+                "avgR": round(sum(vals) / len(vals), 3)}
+
     return {
         "closed": closed,
         "wins": wins,
@@ -297,4 +320,6 @@ def stats() -> dict:
         "adherenceRate": round(followed / closed * 100, 1) if closed else None,
         "bySymbol": {k: round(sum(v), 2) for k, v in by_symbol.items()},
         "byInterval": {k: round(sum(v), 2) for k, v in by_interval.items()},
+        "byExitReason": by_exit_reason,
+        "adherenceEv": {"followed": _agg("followed"), "deviated": _agg("deviated")},
     }

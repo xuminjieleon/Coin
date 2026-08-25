@@ -204,6 +204,46 @@ export default function JournalPanel({ symbol, interval, plan, refreshKey }: Pro
         </div>
       )}
 
+      {stats?.adherenceEv?.followed && stats?.adherenceEv?.deviated && (
+        <div
+          className="journal-leak"
+          title="遵循=实际离场与计划重放一致（同因或 ±0.5R 内）。偏离成本是执行层优势（回测 +0.2~0.3R/笔）未被兑现的直接度量"
+        >
+          遵循 {stats.adherenceEv.followed.count} 笔均值{' '}
+          <b className="text-up">
+            {stats.adherenceEv.followed.avgR >= 0 ? '+' : ''}
+            {stats.adherenceEv.followed.avgR}R
+          </b>{' '}
+          vs 偏离 {stats.adherenceEv.deviated.count} 笔均值{' '}
+          <b className="text-down">
+            {stats.adherenceEv.deviated.avgR >= 0 ? '+' : ''}
+            {stats.adherenceEv.deviated.avgR}R
+          </b>
+          {(stats.adherenceEv.followed.avgR - stats.adherenceEv.deviated.avgR).toFixed(2) !== '0.00' && (
+            <>
+              {' '}—— 偏离成本{' '}
+              <b className="text-down">
+                {(stats.adherenceEv.followed.avgR - stats.adherenceEv.deviated.avgR).toFixed(2)}R/笔
+              </b>
+            </>
+          )}
+        </div>
+      )}
+
+      {stats?.byExitReason && Object.keys(stats.byExitReason).length > 0 && (
+        <div className="journal-reasons">
+          {Object.entries(stats.byExitReason).map(([reason, v]) => (
+            <span key={reason} title={`${REASON_LABEL[reason] ?? reason}：${v.count} 笔，均值 ${v.avgR}R，胜率 ${v.winRate}%`}>
+              {REASON_LABEL[reason] ?? reason} {v.count}笔{' '}
+              <b className={v.sumR >= 0 ? 'text-up' : 'text-down'}>
+                {v.sumR >= 0 ? '+' : ''}
+                {v.sumR}R
+              </b>
+            </span>
+          ))}
+        </div>
+      )}
+
       {open.length > 0 && (
         <div className="journal-section">
           <div className="section-label">持仓中（{open.length}）</div>

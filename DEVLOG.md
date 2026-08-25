@@ -4,6 +4,17 @@
 > 规范、API 契约与当前状态见 `AGENTS.md`——会话开始先读那个；本文件按需查阅（需要了解某功能"为什么这样做"、回测依据、踩坑记录时再来读）。
 > 约定：每次推进后在本文件**顶部**追加新条目（最新在前）。
 
+## 2026-08-25（第三轮）盈利扩展三杠杆（目标校准：扩大盈利）
+
+- **背景**：用户把最高优先级目标校准为"扩大盈利"，要求检查系统还有什么可增强。审计结论：策略参数已冻结（11b 轮），利润公式 `P = EV × 笔数 × 遵循率` 中 EV 不可再调参，剩余杠杆是①机会数②遵循率③跨仓位管理——分别对应三个已实现功能。
+- **杠杆① 机会捕捉（笔数↑）**：
+  - **市场级计划观察器**（前端 `utils/alerts.ts` checkPlans + App 刷新时拉 `/api/scan`，仅预警铃铛开启时）：扫描结果中 hasPlan 标的出现**新计划或计划转向**→ toast + 浏览器通知（toast 点击切标的）；首个刷新周期静默播种（防通知风暴）、每标的 30min 冷却、当前标的不重复提醒（屏上已可见）。后端无改动（scan 已有 5min 服务端缓存，前端复用）
+  - **当前标的挂单监控**（setPlan + checkPrice 内联）：价格回踩至计划入场区 ≤0.3×ATR → "挂单注意成交"；挂单窗口 fillBars 根到期 → "按纪律撤单/重估"（到期重臂=每窗口提醒一次）。关键设计：计划身份 key=symbol|interval|direction，**entry 随 ATR 漂移原地更新**不重置计时——否则每次刷新 entry 变动都会被当成新计划导致永不到期
+- **杠杆② 组合分诊（跨仓位不漏管）**：`POST /api/portfolio/advise` 每仓位 `attention{level,text}`——danger（无止损/止损越强平价/超时间退出窗口）> warn（浮亏 ≤-1R 或逆势 |评分|≥25）> info（评分轻度反向）> ok（顺势）；评分走扫描器口径（200 根 full_analysis，无 MTF/衍生品——分诊用，精确动作看仓位面板）；rows 增 unrealizedR/barsHeld；items 汇总"N 个仓位需立即处理"。PortfolioPanel 按严重度排序 + attention chip（紧急/注意/偏逆，title 显示原因）
+- **杠杆③ 遵循率成本可见化**：`GET /api/journal/stats` 增 `byExitReason{reason:{count,sumR,avgR,winRate}}`（按离场原因拆解盈亏来源——止损/保本跟踪/目标/时间/手动各贡献多少 R）与 `adherenceEv{followed,deviated:{count,sumR,avgR}}`（遵循 vs 偏离的均值差=**偏离成本 R/笔**，执行层优势是否兑现的直接度量）；JournalPanel 渲染偏离成本行（黄色高亮）+ 离场原因 R 拆解行
+- **验证**：journal stats 用两笔测试交易（一笔止损 followed、一笔手动 followed）实测 byExitReason/adherenceEv 结构正确后删除还原（closed=0）；portfolio 三仓位实测（BTC 1 年 4h 仓→danger 超时退出、ETH 无止损→danger、SOL 顺势 +42→ok），danger 聚合 item 正确；tsc 零错误
+- **诚实口径**：计划观察器的"新计划"推送是机会提醒非入场建议（是否下单仍按计划卡纪律）；attention 评分不含 MTF/衍生品上下文（UI tooltip 已标注）
+
 ## 2026-08-25（第二轮）仓位建议二次增强（第十一轮：提高收益/减少亏损）
 
 - **背景**：用户要求在第十轮基础上"继续提升对已有仓位的策略和建议能力，以提高收益或减少亏损"。同时把开发日志从 AGENTS.md 抽离到本文件。

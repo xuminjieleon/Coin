@@ -6,18 +6,27 @@ net/gross exposure, margin, stop-risk budget, concentration, pairwise
 correlation (from local 1d klines) and beta-to-BTC, with rule-based
 warnings. The institutional point: every single position can be "correct"
 while the book as a whole is one correlated bet.
+
+Each position also gets an `attention` triage level (danger > warn > info >
+ok): missing stop / stop beyond liquidation / past the time-exit window /
+deep loss / score against the position. The score runs the same lightweight
+engine as the market scanner (200 bars, no MTF/derivs context) — triage
+caliber; the precise per-trade action lives in /api/position/advise.
 """
 import asyncio
+import time
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from services import kline_cache
-from services.analysis import indicators
+from services.analysis import decision, engine, indicators
 from services.analysis.decision import PLAN_GEOMETRY, PLAN_DEFAULT_INTERVAL
 
 router = APIRouter(prefix="/api")
+
+STEP_MS = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000}
 
 
 class PortfolioPosition(BaseModel):
@@ -44,17 +53,39 @@ def _fmt(x: float) -> str:
     return f"{x:.6f}".rstrip("0").rstrip(".")
 
 
-async def _price_atr(symbol: str, interval: str) -> tuple[float | None, float | None]:
+async def _position_context(symbol: str, interval: str) -> dict:
+    """Price/ATR plus a lightweight composite score (scanner caliber:
+    200 bars, no MTF/derivs context). Empty dict when unavailable."""
     try:
-        rows = await kline_cache.get_klines(symbol, interval, 120)
-        if len(rows) < 20:
-            return None, None
+        rows = await kline_cache.get_klines(symbol, interval, 200)
+        if len(rows) < 60:
+            return {}
         df = kline_cache.rows_to_df(rows)
         atr = indicators.atr(df, 14)
         atr_last = next((v for v in reversed(atr) if v is not None), None)
-        return float(df["close"].iloc[-1]), atr_last
+        full = engine.full_analysis(df)
+        closes = df["close"]
+        lookback = min(24, len(closes) - 1)
+        pcp = None
+        if lookback > 0 and float(closes.iloc[-1 - lookback]) > 0:
+            pcp = (float(closes.iloc[-1]) - float(closes.iloc[-1 - lookback])) \
+                / float(closes.iloc[-1 - lookback]) * 100.0
+        summary = decision.build_summary(
+            last_close=float(closes.iloc[-1]),
+            smc=full["smc"],
+            indicators=full["indicators"],
+            volume_profile=full["volumeProfile"],
+            price_change_pct=pcp,
+            wyckoff=full["wyckoff"],
+            volatility=full["volatility"],
+            cvd_div=full["cvdDivergence"],
+            atr=atr_last,
+            interval=interval,
+        )
+        return {"price": float(closes.iloc[-1]), "atr": atr_last,
+                "score": summary["score"], "bias": summary["bias"]}
     except Exception:
-        return None, None
+        return {}
 
 
 async def _daily_returns(symbol: str, days: int = 90) -> pd.Series | None:
@@ -79,7 +110,7 @@ async def advise_portfolio(body: PortfolioInput):
             raise HTTPException(status_code=400, detail="direction must be long or short")
 
     symbols = sorted({p.symbol.upper() for p in body.positions})
-    price_atr = await asyncio.gather(*[_price_atr(p.symbol.upper(), p.interval) for p in body.positions])
+    contexts = await asyncio.gather(*[_position_context(p.symbol.upper(), p.interval) for p in body.positions])
     returns = await asyncio.gather(*[_daily_returns(s) for s in symbols])
     ret_by_symbol = {s: r for s, r in zip(symbols, returns) if r is not None}
 
@@ -89,29 +120,72 @@ async def advise_portfolio(body: PortfolioInput):
     total_margin = 0.0
     total_risk = 0.0
     notional_list = []
+    now_ms = int(time.time() * 1000)
+    danger_syms: list[str] = []
+    warn_syms: list[str] = []
 
-    for p, (price, atr) in zip(body.positions, price_atr):
+    for p, ctx in zip(body.positions, contexts):
         long = p.direction == "long"
         lev = p.leverage or 1.0
         qty = p.qty
         sym = p.symbol.upper()
+        price = ctx.get("price")
+        atr = ctx.get("atr")
+        score = ctx.get("score")
+        geo = PLAN_GEOMETRY.get(p.interval, PLAN_GEOMETRY[PLAN_DEFAULT_INTERVAL])
+        stopw, texit = geo[1], geo[4]
         if price is None:
             rows.append({"symbol": sym, "price": None, "notionalUsd": None,
                          "riskUsd": None, "liqPrice": None, "unrealizedPct": None,
+                         "unrealizedR": None, "barsHeld": None,
+                         "attention": None,
                          "interval": p.interval, "direction": p.direction})
             continue
         move = (price - p.entry) if long else (p.entry - price)
         pnl_pct = move / p.entry * 100.0
 
+        suggested_stop = (p.entry - stopw * atr if long else p.entry + stopw * atr) if atr else None
         if p.stop is not None:
             risk_per = abs(p.entry - p.stop)
         else:
-            _, stopw, *_ = PLAN_GEOMETRY.get(p.interval, PLAN_GEOMETRY[PLAN_DEFAULT_INTERVAL])
             risk_per = stopw * atr if atr else p.entry * 0.02
         if lev > 1:
             liq_price = p.entry * (1 - 1.0 / lev) if long else p.entry * (1 + 1.0 / lev)
         else:
             liq_price = None
+        unrealized_r = move / risk_per if risk_per > 0 else None
+
+        bars_held = None
+        if p.openedAt:
+            bars_held = (now_ms - p.openedAt) // STEP_MS.get(p.interval, STEP_MS["1h"]) + 1
+
+        # --- attention triage (danger > warn > info > ok) ---
+        att_level, att_text = "ok", None
+        if p.stop is None:
+            att_level = "danger"
+            att_text = (f"未设止损" + (f"——几何建议 {_fmt(suggested_stop)}（{stopw}×ATR）" if suggested_stop else ""))
+        elif liq_price is not None and ((long and p.stop < liq_price) or ((not long) and p.stop > liq_price)):
+            att_level = "danger"
+            att_text = f"止损 {_fmt(p.stop)} 越过估算强平价 {_fmt(liq_price)}——先降杠杆或收紧止损"
+        elif bars_held is not None and bars_held >= texit:
+            att_level = "danger"
+            att_text = f"已持仓 {bars_held}/{texit} 根——超时间退出窗口，按纪律应离场"
+        elif unrealized_r is not None and unrealized_r <= -1:
+            att_level = "warn"
+            att_text = f"浮亏 {unrealized_r:.1f}R——接近/超过单笔计划风险"
+        elif score is not None and ((score > 0) != long):
+            if abs(score) >= 25:
+                att_level = "warn"
+                att_text = f"逆势（当前评分 {score:+d}）"
+            else:
+                att_level = "info"
+                att_text = f"评分与持仓相反（{score:+d}）"
+        elif score is not None:
+            att_text = f"顺势（当前评分 {score:+d}）"
+        if att_level == "danger":
+            danger_syms.append(sym)
+        elif att_level == "warn":
+            warn_syms.append(sym)
 
         notional = qty * price if qty else None
         risk_usd = qty * risk_per if qty else None
@@ -130,10 +204,26 @@ async def advise_portfolio(body: PortfolioInput):
             "symbol": sym, "price": price,
             "notionalUsd": notional, "riskUsd": risk_usd,
             "liqPrice": liq_price, "unrealizedPct": round(pnl_pct, 2),
+            "unrealizedR": round(unrealized_r, 2) if unrealized_r is not None else None,
+            "barsHeld": bars_held,
+            "attention": {"level": att_level, "text": att_text},
             "interval": p.interval, "direction": p.direction,
         })
 
     items: list[dict] = []
+
+    # per-position attention summary (act-now list first)
+    if danger_syms:
+        items.append({
+            "level": "danger",
+            "text": f"{len(danger_syms)} 个仓位需立即处理：{('、'.join(danger_syms))}"
+                    f"（无止损/超时间退出/止损越过强平价）",
+        })
+    if warn_syms:
+        items.append({
+            "level": "warn",
+            "text": f"{len(warn_syms)} 个仓位逆势或深度浮亏：{('、'.join(warn_syms))}——注意防守/减仓",
+        })
 
     # concentration
     if gross_usd > 0 and notional_list:
@@ -214,5 +304,7 @@ async def advise_portfolio(body: PortfolioInput):
         "correlatedPairs": [{"a": a, "b": b, "corr": round(c, 2)} for a, b, c in corr_pairs],
         "betas": betas,
         "items": items,
-        "note": "组合层面规则化检查：集中度/相关性/风险预算。相关性来自本地 1d K 线（90 日）。",
+        "note": "组合层面规则化检查：每仓位紧急度（attention）/集中度/相关性/风险预算。"
+                "attention 评分为扫描器口径（200 根，不含 MTF/衍生品上下文，与决策卡可能有差异），"
+                "精确动作请看「我的仓位」。相关性来自本地 1d K 线（90 日）。",
     }

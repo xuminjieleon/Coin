@@ -22,6 +22,14 @@ const LEVEL_CLASS: Record<string, string> = {
   danger: 'pos-item-danger',
 }
 
+const ATT_RANK: Record<string, number> = { danger: 0, warn: 1, info: 2, ok: 3 }
+
+const ATT_CHIP: Record<string, { cls: string; label: string }> = {
+  danger: { cls: 'pf-att-danger', label: '紧急' },
+  warn: { cls: 'pf-att-warn', label: '注意' },
+  info: { cls: 'pf-att-info', label: '偏逆' },
+}
+
 function loadAll(): Record<string, SavedPosition> {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
@@ -99,7 +107,7 @@ export default function PortfolioPanel({ refreshKey }: Props) {
       <div className="panel-title-row">
         <div className="panel-title">组合风控（{count} 个仓位）</div>
         <SourceHint
-          text="汇总「我的仓位」里保存的全部标的位置：净/总敞口、保证金、止损风险预算、集中度、两两相关性（本地 1d K 线 90 日）与对 BTC 的 beta。机构风控在组合层：单笔都对、组合仍可能是一注同向的相关性赌注。"
+          text="汇总「我的仓位」里保存的全部标的位置：每仓位紧急度分诊（紧急=无止损/超时间退出/止损越过强平价；注意=逆势或深亏；偏逆=评分轻度反向——按严重度排序）、净/总敞口、保证金、止损风险预算、集中度、两两相关性（本地 1d K 线 90 日）与对 BTC 的 beta。紧急度评分为扫描器口径（不含 MTF/衍生品上下文），精确动作看「我的仓位」。机构风控在组合层：单笔都对、组合仍可能是一注同向的相关性赌注。"
         />
       </div>
       <div className="pf-equity-row">
@@ -148,21 +156,37 @@ export default function PortfolioPanel({ refreshKey }: Props) {
             </div>
           </div>
           <div className="pf-positions">
-            {advice.positions
+            {[...advice.positions]
               .filter((p) => p.notionalUsd != null)
-              .map((p) => (
-                <div className="pf-pos-row" key={`${p.symbol}-${p.interval}`}>
-                  <span className={p.direction === 'long' ? 'text-up' : 'text-down'}>
-                    {p.direction === 'long' ? '多' : '空'} {p.symbol.replace(/USDT$/, '')}
-                  </span>
-                  <span>{formatUsd(p.notionalUsd)}</span>
-                  <span className={(p.unrealizedPct ?? 0) >= 0 ? 'text-up' : 'text-down'}>
-                    {(p.unrealizedPct ?? 0) >= 0 ? '+' : ''}
-                    {p.unrealizedPct?.toFixed(2)}%
-                  </span>
-                  {p.liqPrice != null && <span className="text-dim">强平≈{formatPrice(p.liqPrice)}</span>}
-                </div>
-              ))}
+              .sort(
+                (a, b) =>
+                  (ATT_RANK[a.attention?.level ?? 'ok'] ?? 3) -
+                  (ATT_RANK[b.attention?.level ?? 'ok'] ?? 3),
+              )
+              .map((p) => {
+                const chip = p.attention ? ATT_CHIP[p.attention.level] : undefined
+                return (
+                  <div className="pf-pos-row" key={`${p.symbol}-${p.interval}`}>
+                    <span className={p.direction === 'long' ? 'text-up' : 'text-down'}>
+                      {p.direction === 'long' ? '多' : '空'} {p.symbol.replace(/USDT$/, '')}
+                    </span>
+                    <span>{formatUsd(p.notionalUsd)}</span>
+                    <span className={(p.unrealizedPct ?? 0) >= 0 ? 'text-up' : 'text-down'}>
+                      {(p.unrealizedPct ?? 0) >= 0 ? '+' : ''}
+                      {p.unrealizedPct?.toFixed(2)}%
+                    </span>
+                    {p.liqPrice != null && <span className="text-dim">强平≈{formatPrice(p.liqPrice)}</span>}
+                    {chip && (
+                      <span
+                        className={`pf-att ${chip.cls}`}
+                        title={p.attention?.text ?? undefined}
+                      >
+                        {chip.label}
+                      </span>
+                    )}
+                  </div>
+                )
+              })}
           </div>
           <ul className="pos-items">
             {advice.items.map((it, i) => (

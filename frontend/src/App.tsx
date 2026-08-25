@@ -23,6 +23,7 @@ import {
   fetchMacro,
   fetchOnchain,
   fetchOrderbook,
+  fetchScan,
   type AnalysisResponse,
   type BacktestResult,
   type Derivatives,
@@ -119,11 +120,13 @@ export default function App() {
       setAnalysis(a)
       setError(null)
       setLastRefresh(new Date())
-      // feed alert engine with key levels + structure events
+      // feed alert engine with key levels + structure events + active plan
       const engine = alertEngineRef.current
       engine.setLevels(
         a.summary.keyLevels.map((k) => ({ price: k.price, label: k.label })),
       )
+      const atr = [...(a.indicators.atr14 ?? [])].reverse().find((v) => v != null) ?? null
+      engine.setPlan(a.summary.tradePlan ?? null, a.symbol, a.interval, atr)
       emitAlerts(
         engine.checkEvents(a.smc.structureEvents, a.smc.sweepEvents, a.symbol),
       )
@@ -185,6 +188,19 @@ export default function App() {
     }
   }, [])
 
+  // market-wide plan watcher (server caches scan 5min per interval; runs only
+  // when alerts are enabled) — new plans / direction flips become toasts
+  const loadScanWatch = useCallback(async () => {
+    const engine = alertEngineRef.current
+    if (!engine.isEnabled()) return
+    try {
+      const res = await fetchScan(intervalRef.current, 40)
+      emitAlerts(engine.checkPlans(res.rows, intervalRef.current, symbolRef.current))
+    } catch {
+      /* scan watch is optional */
+    }
+  }, [emitAlerts])
+
   // Unified refresh (manual button + 5-min auto): analysis, chart tail,
   // derivatives, backtest, order book, liquidations in one pass.
   const refreshData = useCallback(async () => {
@@ -208,7 +224,8 @@ export default function App() {
     void loadBacktest()
     void loadMarketPanels()
     void loadGlobalPanels()
-  }, [handleAnalysis, loadDerivatives, loadBacktest, loadMarketPanels, loadGlobalPanels, emitAlerts])
+    void loadScanWatch()
+  }, [handleAnalysis, loadDerivatives, loadBacktest, loadMarketPanels, loadGlobalPanels, loadScanWatch, emitAlerts])
 
   // Auto refresh every 5 minutes (timer restarts on symbol/interval change)
   useEffect(() => {
@@ -227,12 +244,13 @@ export default function App() {
     loadDerivatives()
     loadBacktest()
     loadMarketPanels()
+    void loadScanWatch()
     try {
       localStorage.setItem(STORAGE_KEY, symbol)
     } catch {
       /* ignore */
     }
-  }, [symbol, interval, loadDerivatives, loadBacktest, loadMarketPanels])
+  }, [symbol, interval, loadDerivatives, loadBacktest, loadMarketPanels, loadScanWatch])
 
   // global panels on mount
   useEffect(() => {
@@ -445,9 +463,19 @@ export default function App() {
       />
       <div className="toast-stack">
         {toasts.map((t) => (
-          <div className="toast" key={t.id} onClick={() => dismissToast(t.id)}>
-            <span className="toast-icon">🔔</span>
-            <span className="toast-text">{t.text}</span>
+          <div
+            className="toast"
+            key={t.id}
+            onClick={() => {
+              if (t.symbol && t.symbol !== symbolRef.current) setSymbol(t.symbol)
+              dismissToast(t.id)
+            }}
+          >
+            <span className="toast-icon">{t.symbol ? '🎯' : '🔔'}</span>
+            <span className="toast-text">
+              {t.text}
+              {t.symbol && t.symbol !== symbolRef.current ? '（点击切换标的）' : ''}
+            </span>
           </div>
         ))}
       </div>
