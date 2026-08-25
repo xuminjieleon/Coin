@@ -43,7 +43,7 @@
 
 > **数据模式**：不使用实时推送（无 WS）。统一为**手动刷新按钮 + 每 5 分钟自动刷新**（开关持久化 localStorage `coinlens.autoRefresh`），刷新时一次性重拉 analysis/derivatives/backtest 等，并把新 K 线尾部原地同步进图表（`syncBars`：时间戳等于最后一根→更新、更大→追加、更旧→忽略，不重置视图）。
 
-布局：顶部 Header（搜索/周期/刷新按钮/自动刷新开关/**全市场扫描按钮**/预警铃铛/更新时间）｜左侧 klinecharts 主图+SMC 标注+EMA/RSI｜右侧 360px 栏**分三个 Tab**：**决策**（决策摘要→交易计划→衍生品→成交量分布）｜**市场数据**（宏观联动→链上→订单簿→清算→事件日历）｜**交易**（组合风控→我的仓位→交易日记）。Tab 选择持久化 localStorage `coinlens.tab`。
+布局：顶部 Header（搜索/周期/刷新按钮/自动刷新开关/**全市场扫描按钮**/预警铃铛/更新时间）｜左侧 klinecharts 主图+SMC 标注+EMA/RSI｜右侧 360px 栏**分三个 Tab**：**决策**（决策摘要→交易计划→衍生品→成交量分布）｜**市场数据**（宏观联动→链上→订单簿→清算→事件日历）｜**交易**（组合风控→我的仓位→交易日记）。Tab 选择持久化 localStorage `coinlens.tab`。**响应式（纯 CSS 断点，无 JS 检测）**：≤880px 侧栏折到图表下方（图高 clamp(280px,46vh,460px)、侧栏全宽内部滚动）；横屏矮视口整页滚动；≤640px Header 折两行分组（header-main/header-controls）、刷新按钮/预警文字/更新时间前缀隐藏、搜索下拉右锚、toast/扫描弹窗近全屏、输入框 16px 防 iOS 聚焦缩放；Header.tsx 的可隐藏文字必须包在 `.btn-label`/`.ws-label`/`.brand-text` span 里。
 
 ## 4. API 契约（前后端共同遵守）
 
@@ -72,7 +72,7 @@
 
 ### 已上线功能
 - **后端**：SMC 决策引擎（swings→smc→indicators→volume→decision，regime 分化权重+MTF 共振+CVD 多周期共振+funding/OI 加权+Wyckoff+波动率状态）、K 线本地缓存、衍生品持久化与分位、订单簿微观结构、清算聚合、链上、宏观联动、全市场扫描、交易日记（计划重放+遵循率）、组合风控、仓位建议（决策卡同口径+回放+事件+证据状态+止盈阶梯+action）、K 线点击回放（asOf）。SMC 单测通过；各端点实测 200、校验 400 正常
-- **前端**：全部面板就绪（DecisionCard/TradePlanCard/DerivativesPanel/VolumeProfilePanel/MacroPanel/OnchainPanel/OrderBookPanel/LiquidationPanel/CalendarPanel/PortfolioPanel/PositionPanel/JournalPanel/ScannerModal/MtfBar/SourceHint）；`npm.cmd run build` tsc 零错误
+- **前端**：全部面板就绪（DecisionCard/TradePlanCard/DerivativesPanel/VolumeProfilePanel/MacroPanel/OnchainPanel/OrderBookPanel/LiquidationPanel/CalendarPanel/PortfolioPanel/PositionPanel/JournalPanel/ScannerModal/MtfBar/SourceHint）；**移动端响应式适配已上线**（App.css 断点见 §3 布局；宏观表格改为 4 列两行自适应，修复了桌面端 360px 侧栏下走势列被裁切的历史问题）；`npm.cmd run build` tsc 零错误
 - **盈利扩展三杠杆已接线（2026-08-25）**：①**机会捕捉**——预警铃铛开启时每次刷新后台拉 `/api/scan`（服务端 5min 缓存）喂计划观察器：市场级**新计划/计划转向**推送（首个周期静默播种防风暴、每标的 30min 冷却、toast 点击切标的）+ 当前标的**回踩接近计划入场区**（≤0.3×ATR）与**挂单窗口到期**提醒（key=symbol|interval|direction，entry 随 ATR 漂移原地更新不重置计时，到期每窗口提醒一次）；②**组合分诊**——PortfolioPanel 每仓位 attention chip（紧急/注意/偏逆）按严重度排序置顶；③**遵循率成本**——JournalPanel 显示遵循 vs 偏离的均值差（偏离成本 R/笔）+ 按离场原因的盈亏拆解
 - 仓位按 symbol 持久化 localStorage `coinlens.position`，数据刷新时自动重新分析
 
@@ -140,7 +140,8 @@
 
 ## 8. 待办
 
-1. **用户浏览器验收机构级 UI**：刷新 http://localhost:5173 复核——Header「⚡扫描」按钮、右侧栏三个 Tab、市场数据 Tab（宏观/链上/订单簿/清算）、交易 Tab（组合风控/仓位/日记）、衍生品分位数与 RR25/Max Pain、K 线点击回放
-2. **用户浏览器验收仓位建议增强（2026-08-25 两轮）**：交易 Tab「我的仓位」填写开仓时间后——顶部动作横幅（最优先纪律动作）、证据状态 chip、评分漂移 chip、MFE/MAE chip、持仓期间事件列表、止盈参考阶梯表；建议项（入场质量/止损宽度/贴池插针/资金费率 carry/事件预警/早离场/跟踪收紧）
-3. **用户浏览器验收盈利扩展三杠杆（2026-08-25）**：开启预警铃铛后等一次刷新——新计划/计划转向 toast（点击切标的）、当前标的回踩入场区与挂单到期提醒；交易 Tab 组合风控的每仓位紧急度 chip；交易日记的偏离成本行与离场原因拆解
-4. 未排期迭代方向：AI 盘面解读（LLM 汇总各维度）、策略回测平台、可见区域成交量分布、按 interval 动态轮询周期、美股/加密相关标的（MSTR/COIN/NDX）
+1. **用户手机/窄窗口验收移动端 UI**：手机访问 `http://<内网IP>:5173`——Header 两行折叠、图表上方侧栏下方布局、扫描弹窗近全屏可横向滑动表格、toast 全宽、宏观表两行式；桌面端窄窗口拖到 ≤880px/≤640px 同样触发断点
+2. **用户浏览器验收机构级 UI**：刷新 http://localhost:5173 复核——Header「⚡扫描」按钮、右侧栏三个 Tab、市场数据 Tab（宏观/链上/订单簿/清算）、交易 Tab（组合风控/仓位/日记）、衍生品分位数与 RR25/Max Pain、K 线点击回放
+3. **用户浏览器验收仓位建议增强（2026-08-25 两轮）**：交易 Tab「我的仓位」填写开仓时间后——顶部动作横幅（最优先纪律动作）、证据状态 chip、评分漂移 chip、MFE/MAE chip、持仓期间事件列表、止盈参考阶梯表；建议项（入场质量/止损宽度/贴池插针/资金费率 carry/事件预警/早离场/跟踪收紧）
+4. **用户浏览器验收盈利扩展三杠杆（2026-08-25）**：开启预警铃铛后等一次刷新——新计划/计划转向 toast（点击切标的）、当前标的回踩入场区与挂单到期提醒；交易 Tab 组合风控的每仓位紧急度 chip；交易日记的偏离成本行与离场原因拆解
+5. 未排期迭代方向：AI 盘面解读（LLM 汇总各维度）、策略回测平台、可见区域成交量分布、按 interval 动态轮询周期、美股/加密相关标的（MSTR/COIN/NDX）
