@@ -6,4 +6,5 @@ export const QUICK_SYMBOLS = [
   { label: 'BTC', symbol: 'BTCUSDT' },
   { label: 'ETH', symbol: 'ETHUSDT' },
   { label: 'SOL', symbol: 'SOLUSDT' },
+  { label: 'BNB', symbol: 'BNBUSDT' },
 ]

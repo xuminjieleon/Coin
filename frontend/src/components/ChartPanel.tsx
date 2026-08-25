@@ -3,7 +3,6 @@ import {
   init,
   dispose,
   registerOverlay,
-  registerIndicator,
   getOverlayClass,
   type Chart,
   type KLineData,
@@ -18,8 +17,6 @@ import type { Interval } from '../types'
 
 const CANDLE_PANE = 'candle_pane'
 const VOL_PANE = 'vol_pane'
-const RSI_PANE = 'rsi_pane'
-const CVD_PANE = 'cvd_pane'
 const OVERLAY_GROUP = 'smc'
 
 const PERIOD_OF: Record<Interval, Period> = {
@@ -188,26 +185,6 @@ function registerCustomOverlays(): void {
   }
 }
 
-let cvdIndicatorRegistered = false
-
-function registerCvdIndicator(): void {
-  if (cvdIndicatorRegistered) return
-  cvdIndicatorRegistered = true
-  registerIndicator({
-    name: 'CVD',
-    shortName: 'CVD',
-    figures: [{ key: 'cvd', title: 'CVD: ', type: 'line' }],
-    calc: (dataList, indicator) => {
-      // extendData: {time, cvd} pairs aligned by timestamp so prepended
-      // history pages (backward paging) never shift the CVD line.
-      const pairs = indicator.extendData as { time: number; cvd: number | null }[] | undefined
-      if (!pairs) return dataList.map(() => ({ cvd: undefined }))
-      const byTime = new Map(pairs.map((p) => [p.time, p.cvd]))
-      return dataList.map((d) => ({ cvd: byTime.get(d.timestamp) ?? undefined }))
-    },
-  })
-}
-
 function toKLineData(c: Candle): KLineData {
   return { timestamp: c.time, open: c.open, high: c.high, low: c.low, close: c.close, volume: c.volume }
 }
@@ -280,7 +257,6 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
   )
 
   registerCustomOverlays()
-  registerCvdIndicator()
   registerReplayMarkOverlay()
 
   // Init chart + indicators + data loader once
@@ -346,23 +322,6 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
     // Volume pane
     chart.createIndicator({ name: 'VOL', paneId: VOL_PANE })
     chart.setPaneOptions({ id: VOL_PANE, height: 70, minHeight: 40 })
-    // RSI pane
-    chart.createIndicator({
-      name: 'RSI',
-      calcParams: [14],
-      paneId: RSI_PANE,
-      minValue: 0,
-      maxValue: 100,
-      styles: { lines: [{ color: '#7e57c2', size: 1 }] },
-    })
-    chart.setPaneOptions({ id: RSI_PANE, height: 70, minHeight: 40 })
-    // CVD pane (values injected per analysis via extendData)
-    chart.createIndicator({
-      name: 'CVD',
-      paneId: CVD_PANE,
-      styles: { lines: [{ color: '#4dd0e1', size: 1 }] },
-    })
-    chart.setPaneOptions({ id: CVD_PANE, height: 60, minHeight: 40 })
 
     // data loader: chart pulls candles on symbol/period change. Live updates are
     // NOT subscribed (manual / 5-min refresh mode); subscribeBar only keeps the
@@ -490,19 +449,6 @@ const ChartPanel = forwardRef<ChartPanelHandle, Props>(function ChartPanel(
     if (!analysis || analysis.candles.length === 0) return
     if (analysis.symbol !== symbol || analysis.interval !== interval) return
     const lastClose = analysis.candles[analysis.candles.length - 1].close
-
-    // refresh CVD pane values (remove + recreate with new extendData)
-    chart.removeIndicator({ name: 'CVD' })
-    const cvdPairs = analysis.candles.map((c, i) => ({
-      time: c.time,
-      cvd: analysis.indicators.cvd?.[i] ?? null,
-    }))
-    chart.createIndicator({
-      name: 'CVD',
-      paneId: CVD_PANE,
-      extendData: cvdPairs,
-      styles: { lines: [{ color: '#4dd0e1', size: 1 }] },
-    })
 
     const specs = buildOverlaySpecs(analysis.smc, lastClose, {
       pocSeries: analysis.volumeProfile.pocSeries,

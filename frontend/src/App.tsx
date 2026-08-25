@@ -414,11 +414,11 @@ export default function App() {
                   </button>
                 </div>
               )}
-              <DecisionCard analysis={decisionAnalysis} backtest={backtest} />
               <TradePlanCard
                 plan={decisionAnalysis?.summary.tradePlan ?? null}
                 interval={interval}
               />
+              <DecisionCard analysis={decisionAnalysis} backtest={backtest} />
               <DerivativesPanel derivatives={derivatives} symbol={symbol} />
               <VolumeProfilePanel
                 profile={decisionAnalysis?.volumeProfile ?? null}

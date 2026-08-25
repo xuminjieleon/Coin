@@ -44,7 +44,7 @@
 
 > **数据模式**：不使用实时推送（无 WS）。统一为**手动刷新按钮 + 每 5 分钟自动刷新**（开关持久化 localStorage `coinlens.autoRefresh`），刷新时一次性重拉 analysis/derivatives/backtest 等，并把新 K 线尾部原地同步进图表（`syncBars`：时间戳等于最后一根→更新、更大→追加、更旧→忽略，不重置视图）。
 
-布局：顶部 Header（搜索/周期/刷新按钮/自动刷新开关/**全市场扫描按钮**/预警铃铛/更新时间）｜左侧 klinecharts 主图+SMC 标注+EMA/RSI｜右侧 360px 栏**分三个 Tab**：**决策**（决策摘要→交易计划→衍生品→成交量分布）｜**市场数据**（宏观联动→链上→订单簿→清算→事件日历）｜**交易**（组合风控→我的仓位→交易日记）。Tab 选择持久化 localStorage `coinlens.tab`。**响应式（纯 CSS 断点，无 JS 检测）**：≤880px 侧栏折到图表下方（图高 clamp(280px,46vh,460px)、侧栏全宽内部滚动）；横屏矮视口整页滚动；≤640px Header 折两行分组（header-main/header-controls）、刷新按钮/预警文字/更新时间前缀隐藏、搜索下拉右锚、toast/扫描弹窗近全屏、输入框 16px 防 iOS 聚焦缩放；Header.tsx 的可隐藏文字必须包在 `.btn-label`/`.ws-label`/`.brand-text` span 里。
+布局：顶部 Header（快捷币种 BTC/ETH/SOL/BNB + 搜索/周期/刷新按钮/自动刷新开关/**全市场扫描按钮**/预警铃铛/更新时间）｜左侧 klinecharts 主图+SMC 标注+EMA+成交量副图（RSI/CVD 副图已于 2026-08-25 按用户要求移除；RSI/CVD 数据仍在决策评分与滚动回测中使用）｜右侧 360px 栏**分三个 Tab**：**决策**（**交易计划（置顶，可执行层优先）→决策摘要**→衍生品→成交量分布）｜**市场数据**（宏观联动→链上→订单簿→清算→事件日历）｜**交易**（组合风控→我的仓位→交易日记）。Tab 选择持久化 localStorage `coinlens.tab`。**响应式（纯 CSS 断点，无 JS 检测）**：≤880px 侧栏折到图表下方（图高 clamp(280px,46vh,460px)、侧栏全宽内部滚动）；横屏矮视口整页滚动；≤640px Header 折两行分组（header-main/header-controls）、刷新按钮/预警文字/更新时间前缀隐藏、搜索下拉右锚、toast/扫描弹窗近全屏、输入框 16px 防 iOS 聚焦缩放；Header.tsx 的可隐藏文字必须包在 `.btn-label`/`.ws-label`/`.brand-text` span 里。
 
 ## 4. API 契约（前后端共同遵守）
 
@@ -95,6 +95,7 @@
 - Vite dev 绑定 IPv6 localhost（127.0.0.1 连不上时用 http://localhost:5173）
 
 **D:\Work\Coin（企业网机器）**：
+- **启动后端前先查 8000 端口占用**（`netstat -ano | findstr :8000`）：曾发生旧会话进程残留、新进程未抢到端口、UI 全天由旧几何服务的事故（2026-08-25 第十一轮踩坑）
 - node/npm 不在系统 PATH，Node v22.14.0 位于 `D:\360se6\Application\components\Node\`（含 npm.cmd）；运行前端命令前先 `$env:Path = "D:\360se6\Application\components\Node;$env:Path"`
 - Python 用 `py -3.13`；backend/.venv 已重建并装好依赖
 - **npm 网络问题解法**：企业 DNS 把 `registry.npmjs.org`/`registry.npmmirror.com` 劫持到 127.0.0.1（黑洞），Zscaler 代理也封 registry，但**直连真实 IP 可通**（DNS 层劫持、IP 层未封）。解决：`frontend/tools/dns-override.cjs`（Node `--require` 钩子，仅对当前进程把两个 registry 域名映射回真实 IP）：
@@ -141,6 +142,7 @@
    - 图表标注现状：**流动性池水平线与 OB/FVG 区域矩形已从图表移除**（用户要求精简；池位与区域仍在决策卡关键价位、交易计划入场区）；保留：均衡位 simpleTag、"扫↑/扫↓"、BOS/CHoCH/Wyckoff 文字标注、回放蓝色竖带
 6. **图表数据流**：symbol/interval 变化 → setPeriod+setSymbol → loader.getBars 拉 analysis → overlays 按 groupId 重建；刷新 → App 重拉 analysis → `chartRef.syncBars(尾部K线)` 原地同步；K 线点击回放：`chart.subscribeAction('onCandleBarClick')`（payload `{dataIndex,data:{current}}`）→ App 以 asOf 重拉 analysis。
 7. **诚实口径**：所有建议为规则化纪律提示非预测；UI 文案与 tooltip 不承诺胜率；不可达的数据如实置空。
+8. **回测脚本必须并发执行**（2026-08-25 用户要求固化）：任何新写（及下次改动）的回测/决策记录计算类脚本不得纯串行长跑（wall time >10 分钟不允许）——记录计算为 CPU 密集，**必须用 multiprocessing 多进程并行（每 symbol×timeframe 一个 worker；纯 threading 受 GIL 限制无效；Windows 下入口必须 `if __name__ == "__main__"` 保护）**，K 线回填等网络段用 asyncio 并发（尊重各数据源限流，参考 kline_cache 的分页并发与重试）；各 worker 结果写独立缓存文件后主进程汇总。既有串行脚本（backtest_5y/top10/ltc 等）在下次触碰时按此标准并行化。另注意本机后台进程 ~15 分钟会被静默强杀（DEVLOG 第八轮踩坑），并发化同时是缩短总时长、规避强杀的手段。
 
 ## 8. 待办
 
