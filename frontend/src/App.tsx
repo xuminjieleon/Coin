@@ -160,32 +160,20 @@ export default function App() {
   }, [])
 
   const loadMarketPanels = useCallback(async () => {
-    try {
-      const ob = await fetchOrderbook(symbolRef.current)
-      setOrderbook(ob)
-    } catch {
-      setOrderbook(null)
-    }
-    try {
-      const liq = await fetchLiquidations(symbolRef.current)
-      setLiquidations(liq)
-    } catch {
-      setLiquidations(null)
-    }
+    // orderbook + liquidations in parallel (independent endpoints)
+    const [ob, liq] = await Promise.allSettled([
+      fetchOrderbook(symbolRef.current),
+      fetchLiquidations(symbolRef.current),
+    ])
+    setOrderbook(ob.status === 'fulfilled' ? ob.value : null)
+    setLiquidations(liq.status === 'fulfilled' ? liq.value : null)
   }, [])
 
   // global panels (server-cached, cheap): load once + on each refresh pass
   const loadGlobalPanels = useCallback(async () => {
-    try {
-      setOnchain(await fetchOnchain())
-    } catch {
-      /* keep previous */
-    }
-    try {
-      setMacro(await fetchMacro())
-    } catch {
-      /* keep previous */
-    }
+    const [on, ma] = await Promise.allSettled([fetchOnchain(), fetchMacro()])
+    if (on.status === 'fulfilled') setOnchain(on.value)
+    if (ma.status === 'fulfilled') setMacro(ma.value)
   }, [])
 
   // market-wide plan watcher (server caches scan 5min per interval; runs only
@@ -202,9 +190,16 @@ export default function App() {
   }, [emitAlerts])
 
   // Unified refresh (manual button + 5-min auto): analysis, chart tail,
-  // derivatives, backtest, order book, liquidations in one pass.
+  // derivatives, backtest, order book, liquidations in one pass. All panel
+  // loads fire in parallel with the analysis fetch (the sidebar fills while
+  // the chart loads instead of waiting for it).
   const refreshData = useCallback(async () => {
     setRefreshing(true)
+    void loadDerivatives()
+    void loadBacktest()
+    void loadMarketPanels()
+    void loadGlobalPanels()
+    void loadScanWatch()
     try {
       const data = await fetchAnalysis(symbolRef.current, intervalRef.current, 500)
       if (data.symbol === symbolRef.current && data.interval === intervalRef.current) {
@@ -220,11 +215,6 @@ export default function App() {
     } finally {
       setRefreshing(false)
     }
-    void loadDerivatives()
-    void loadBacktest()
-    void loadMarketPanels()
-    void loadGlobalPanels()
-    void loadScanWatch()
   }, [handleAnalysis, loadDerivatives, loadBacktest, loadMarketPanels, loadGlobalPanels, loadScanWatch, emitAlerts])
 
   // Auto refresh every 5 minutes (timer restarts on symbol/interval change)

@@ -83,11 +83,31 @@ def _cache_set(key: str, data: Any, ttl: float) -> None:
     _cache[key] = (time.time() + ttl, data)
 
 
+# Shared keep-alive client: one TCP+TLS handshake per host instead of per
+# request (the enterprise network's handshake costs 1-2s each, which made
+# sequential derivative calls take 10s+ before pooling). Per-request
+# timeouts still apply; connections are pooled across requests.
+_client: httpx.AsyncClient | None = None
+
+
+def _shared_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(timeout=_PRIMARY_TIMEOUT)
+    return _client
+
+
+async def close_client() -> None:
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
+
 async def _fetch(url: str, params: dict | None, timeout: httpx.Timeout) -> Any:
-    async with httpx.AsyncClient(timeout=timeout) as client:
-        resp = await client.get(url, params=params)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await _shared_client().get(url, params=params, timeout=timeout)
+    resp.raise_for_status()
+    return resp.json()
 
 
 async def _get(path: str, params: dict | None = None, cache_ttl: float = 0) -> Any:

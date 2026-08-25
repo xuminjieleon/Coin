@@ -16,8 +16,15 @@ from routers import (
     sources,
     symbols,
 )
+from services import binance, gateio
 
 app = FastAPI(title="CoinLens")
+
+
+@app.on_event("shutdown")
+async def _close_http_clients() -> None:
+    await binance.close_client()
+    await gateio.close_client()
 
 app.add_middleware(
     CORSMiddleware,

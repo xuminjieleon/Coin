@@ -13,6 +13,23 @@ import httpx
 GATE_API = "https://api.gateio.ws"
 _TIMEOUT = httpx.Timeout(8.0)
 
+# Shared keep-alive client (connection pooling across requests; see binance.py)
+_client: httpx.AsyncClient | None = None
+
+
+def _shared_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(timeout=_TIMEOUT)
+    return _client
+
+
+async def close_client() -> None:
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
 # contract multiplier cache: symbol -> (expires, multiplier)
 _mult_cache: dict[str, tuple[float, float]] = {}
 _MULT_TTL = 3600.0
@@ -26,10 +43,9 @@ def to_gate_symbol(symbol: str) -> str:
 
 
 async def _get(path: str, params: dict | None = None):
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-        resp = await client.get(f"{GATE_API}{path}", params=params)
-        resp.raise_for_status()
-        return resp.json()
+    resp = await _shared_client().get(f"{GATE_API}{path}", params=params)
+    resp.raise_for_status()
+    return resp.json()
 
 
 async def contract_multiplier(symbol: str) -> float:
@@ -69,18 +85,20 @@ async def contract_stats(symbol: str, interval: str = "1h", limit: int = 30) -> 
 
 async def futures_snapshot(symbol: str) -> dict | None:
     """Funding, OI history/value, long/short account ratio, taker ratio."""
+    import asyncio
+
     g = to_gate_symbol(symbol)
-    tickers = await _get("/api/v4/futures/usdt/tickers", {"contract": g})
+    tickers, stats, spec = await asyncio.gather(
+        _get("/api/v4/futures/usdt/tickers", {"contract": g}),
+        _get("/api/v4/futures/usdt/contract_stats",
+             {"contract": g, "interval": "1h", "limit": 30}),
+        _get(f"/api/v4/futures/usdt/contracts/{g}"),
+    )
     if not tickers:
         return None
     ticker = tickers[0]
-    stats = await _get(
-        "/api/v4/futures/usdt/contract_stats",
-        {"contract": g, "interval": "1h", "limit": 30},
-    )
     if not stats:
         return None
-    spec = await _get(f"/api/v4/futures/usdt/contracts/{g}")
     mult = float(spec.get("quanto_multiplier") or 1.0)
 
     mark = float(ticker.get("mark_price") or 0.0)

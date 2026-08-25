@@ -4,6 +4,27 @@
 > 规范、API 契约与当前状态见 `AGENTS.md`——会话开始先读那个；本文件按需查阅（需要了解某功能"为什么这样做"、回测依据、踩坑记录时再来读）。
 > 约定：每次推进后在本文件**顶部**追加新条目（最新在前）。
 
+## 2026-08-25（第十二轮）加载性能优化（连接池+并行化，整页 ~15s→~2.4s）
+
+- **背景**：用户反馈 UI 加载慢（K 线/分析等），要求优化（多线程/进程）。先实测定位再动手——**CPU 不是瓶颈**（`full_analysis` 500 根仅 13ms），瓶颈是**网络串行等待**：①binance/gateio 每次请求新建 `httpx.AsyncClient`（企业网 TLS 握手 1-2s/次）；②derivatives 路由 5 个币安调用顺序 await（最坏叠加 10s+）；③`ensure_backfill`（Gate.io 回填，首次 1d×1000+1h×720）阻塞响应；④前端 `refreshData` 先 await analysis 完才触发其余面板、订单簿/清算/链上/宏观各自内部串行。
+- **后端改动**：
+  - `binance.py`/`gateio.py`：**共享懒加载 AsyncClient 连接池**（keep-alive 复用 TCP+TLS；按请求覆盖超时；`close_client()` 由 FastAPI shutdown 钩子清理）——所有走 `_fetch/_get` 的路径（K 线/订单簿/衍生品/清算/扫描）自动受益
+  - `routers/derivatives.py`：5 个币安端点 `asyncio.gather` 并行；Gate.io 回退与 options 快照并行；`ensure_backfill` 移到 `asyncio.create_task` 后台任务（强引用防 GC；快照入库/分位数读取仍内联）——响应不再被回填阻塞
+  - `gateio.futures_snapshot` 内部 tickers/stats/spec 三连请求并行
+  - `routers/analysis.py` `_derivatives_context`：OI 历史/费率两个调用并行
+- **前端改动**（`App.tsx`）：`refreshData` 中各面板加载（衍生品/回测/订单簿/清算/链上/宏观/扫描观察）与 analysis **并行发出**（原来 analysis 完才轮到它们）；`loadMarketPanels`/`loadGlobalPanels` 内部改 `Promise.allSettled` 并行
+- **实测**（本机 Zscaler 网络，冷启动/热连接）：
+  | 端点 | 优化前 | 优化后（冷） | 优化后（热） |
+  |---|---|---|---|
+  | analysis 4h 500 根 | 7.9s | 2.4~3.9s | **0.46s** |
+  | derivatives | 14.8s | 2.0~3.0s | **1.2s** |
+  | liquidations | 4.0s | 0.8~1.9s | ~1.0s |
+  | orderbook | 1.2s | 0.45s | 0.01s（内存缓存） |
+  | 整页（前端并行刷新） | ~15s（被 derivatives 卡死） | ~2.4s | ~0.5s |
+- **正确性验证**：SOL 4h 实时决策与优化前逐字段一致（score 37/bullish/CVD 共振 bearish×2/plan short 100.27/新几何 stopAtr=1.0）；5 个端点全部 200；tsc 零错误。
+- **诚实口径**：首次冷启动仍要 2-4s（真实网络往返）；derivatives 的 historyStats 在**全新币种首次调用**时可能滞后一拍（回填在后台跑，下次刷新补上）——既有行为不变，只是不再阻塞响应。
+- **多进程方案说明**：用户建议的多线程/进程不适用于此问题（CPU 仅 13ms，等待全在网络 IO）——异步并发+连接池才是对症方案；回测类脚本的多进程规范已于第九轮固化（AGENTS §7.8）。
+
 ## 2026-08-25（第十一轮）"评分方向 vs 计划方向冲突"case 统计（用户问答）
 
 - **背景**：用户看到 SOL 4h 评分 +37 看多但计划做空（CVD 多周期共振覆盖评分方向），问应遵循还是放弃、历史回测里多少这种 case、放弃会损失多少利润。

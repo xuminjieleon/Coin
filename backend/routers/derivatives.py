@@ -1,8 +1,13 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query
 
 from services import binance, derivs_store, gateio
 
 router = APIRouter(prefix="/api")
+
+# strong references to background backfill tasks (prevent mid-run GC)
+_bg_tasks: set = set()
 
 
 def compute_oi_change_pct(hist: list) -> float | None:
@@ -18,55 +23,77 @@ def compute_oi_change_pct(hist: list) -> float | None:
 
 
 async def _binance_derivatives(symbol: str, result: dict) -> bool:
-    """Fill `result` from Binance futures API. Returns True if any field set."""
-    ok = False
-    try:
-        hist = await binance.get_open_interest_hist(symbol)
-        if hist:
-            result["openInterest"] = float(hist[-1]["sumOpenInterest"])
-            result["openInterestValue"] = float(hist[-1]["sumOpenInterestValue"])
-            result["oiChangePct24h"] = compute_oi_change_pct(hist)
-            result["oiHistory"] = [
-                {"time": int(h["timestamp"]), "value": float(h["sumOpenInterest"])} for h in hist
-            ]
-            ok = True
-    except (Exception, HTTPException):
-        pass
+    """Fill `result` from Binance futures API. Returns True if any field set.
 
-    try:
-        premium = await binance.get_premium_index(symbol)
+    The five endpoints are independent -> fetched concurrently (they used to
+    be sequential awaits; with per-request failover timeouts that alone could
+    stack 10s+ when the futures host is slow or blocked)."""
+    ok = False
+
+    async def oi():
+        try:
+            hist = await binance.get_open_interest_hist(symbol)
+            return hist
+        except (Exception, HTTPException):
+            return None
+
+    async def premium():
+        try:
+            return await binance.get_premium_index(symbol)
+        except (Exception, HTTPException):
+            return None
+
+    async def funding_hist():
+        try:
+            return await binance.get_funding_rate_hist(symbol)
+        except (Exception, HTTPException):
+            return None
+
+    async def lsr():
+        try:
+            return await binance.get_long_short_ratio(symbol)
+        except (Exception, HTTPException):
+            return None
+
+    async def taker():
+        try:
+            return await binance.get_taker_ratio(symbol)
+        except (Exception, HTTPException):
+            return None
+
+    hist, premium, fhist, lsr_hist, taker = await asyncio.gather(
+        oi(), premium(), funding_hist(), lsr(), taker()
+    )
+
+    if hist:
+        result["openInterest"] = float(hist[-1]["sumOpenInterest"])
+        result["openInterestValue"] = float(hist[-1]["sumOpenInterestValue"])
+        result["oiChangePct24h"] = compute_oi_change_pct(hist)
+        result["oiHistory"] = [
+            {"time": int(h["timestamp"]), "value": float(h["sumOpenInterest"])} for h in hist
+        ]
+        ok = True
+
+    if premium:
         result["fundingRate"] = float(premium["lastFundingRate"])
         ok = True
-    except (Exception, HTTPException):
-        pass
 
-    try:
-        fhist = await binance.get_funding_rate_hist(symbol)
+    if fhist:
         result["fundingHistory"] = [
             {"time": int(f["fundingTime"]), "rate": float(f["fundingRate"])} for f in fhist
         ]
         ok = True
-    except (Exception, HTTPException):
-        pass
 
-    try:
-        lsr = await binance.get_long_short_ratio(symbol)
-        if lsr:
-            result["longShortRatio"] = float(lsr[-1]["longShortRatio"])
-            result["longShortHistory"] = [
-                {"time": int(r["timestamp"]), "ratio": float(r["longShortRatio"])} for r in lsr
-            ]
-            ok = True
-    except (Exception, HTTPException):
-        pass
+    if lsr_hist:
+        result["longShortRatio"] = float(lsr_hist[-1]["longShortRatio"])
+        result["longShortHistory"] = [
+            {"time": int(r["timestamp"]), "ratio": float(r["longShortRatio"])} for r in lsr_hist
+        ]
+        ok = True
 
-    try:
-        taker = await binance.get_taker_ratio(symbol)
-        if taker:
-            result["takerBuySellRatio"] = float(taker[-1]["buySellRatio"])
-            ok = True
-    except (Exception, HTTPException):
-        pass
+    if taker:
+        result["takerBuySellRatio"] = float(taker[-1]["buySellRatio"])
+        ok = True
     return ok
 
 
@@ -92,8 +119,12 @@ async def get_derivatives(symbol: str = Query(...)):
     binance_ok = await _binance_derivatives(symbol, result)
     if binance_ok:
         result["source"] = "binance"
-    else:
-        # Gate.io fallback (Binance futures API unreachable in this network)
+
+    # Gate.io fallback and the options snapshot are independent -> fetch
+    # them concurrently instead of sequentially.
+    async def gate_fallback():
+        if binance_ok:
+            return
         try:
             snap = await gateio.futures_snapshot(symbol)
             if snap:
@@ -104,22 +135,38 @@ async def get_derivatives(symbol: str = Query(...)):
         except Exception:
             pass
 
-    # Options snapshot from Gate.io (best effort, majors only)
-    try:
-        opt = await gateio.options_snapshot(symbol)
-        if opt:
-            result["options"] = opt
-    except Exception:
-        pass
+    async def gate_options():
+        try:
+            opt = await gateio.options_snapshot(symbol)
+            if opt:
+                result["options"] = opt
+        except Exception:
+            pass
 
-    # Persist snapshot + backfill percentile context (best effort)
+    await asyncio.gather(gate_fallback(), gate_options())
+
+    # Persist snapshot inline (fast local write), then percentile context
+    # from what is already stored. The network backfill (Gate.io
+    # contract_stats 1d x1000 + 1h x720 on first sight, 6h incremental
+    # after) runs as a background task so the response is NOT blocked by
+    # it — historyStats catches up on the next refresh pass.
     try:
         derivs_store.record_snapshot(symbol, result["source"], result)
-        await derivs_store.ensure_backfill(symbol)
         stats = derivs_store.history_stats(symbol)
         if stats:
             result["historyStats"] = stats
     except Exception:
         pass
+
+    async def _background_backfill():
+        try:
+            await derivs_store.ensure_backfill(symbol)
+        except Exception:
+            pass
+        finally:
+            _bg_tasks.discard(task)
+
+    task = asyncio.create_task(_background_backfill())
+    _bg_tasks.add(task)
 
     return result

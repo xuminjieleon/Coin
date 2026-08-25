@@ -74,6 +74,7 @@
 ### 已上线功能
 - **后端**：SMC 决策引擎（swings→smc→indicators→volume→decision，regime 分化权重+MTF 共振+CVD 多周期共振+funding/OI 加权+Wyckoff+波动率状态）、K 线本地缓存、衍生品持久化与分位、订单簿微观结构、清算聚合、链上、宏观联动、全市场扫描、交易日记（计划重放+遵循率）、组合风控、仓位建议（决策卡同口径+回放+事件+证据状态+止盈阶梯+action）、K 线点击回放（asOf）。SMC 单测通过；各端点实测 200、校验 400 正常
 - **前端**：全部面板就绪（DecisionCard/TradePlanCard/DerivativesPanel/VolumeProfilePanel/MacroPanel/OnchainPanel/OrderBookPanel/LiquidationPanel/CalendarPanel/PortfolioPanel/PositionPanel/JournalPanel/ScannerModal/MtfBar/SourceHint）；**移动端响应式适配已上线**（App.css 断点见 §3 布局；宏观表格改为 4 列两行自适应，修复了桌面端 360px 侧栏下走势列被裁切的历史问题）；`npm.cmd run build` tsc 零错误
+- **加载性能（2026-08-25 第十二轮）**：后端 binance/gateio 共享 AsyncClient 连接池（勿在 `_fetch/_get` 里改回每次新建 client）；derivatives 5 个币安调用/Gate.io 两路/analysis 衍生品上下文均为 asyncio 并行；`ensure_backfill` 走后台任务（强引用防 GC）；前端各面板与 analysis 并行刷新。整页 ~15s→~2.4s（热 0.5s）。CPU 非瓶颈（full_analysis 500 根 13ms），勿用多进程处理请求路径
 - **盈利扩展三杠杆已接线（2026-08-25）**：①**机会捕捉**——预警铃铛开启时每次刷新后台拉 `/api/scan`（服务端 5min 缓存）喂计划观察器：市场级**新计划/计划转向**推送（首个周期静默播种防风暴、每标的 30min 冷却、toast 点击切标的）+ 当前标的**回踩接近计划入场区**（≤0.3×ATR）与**挂单窗口到期**提醒（key=symbol|interval|direction，entry 随 ATR 漂移原地更新不重置计时，到期每窗口提醒一次）；②**组合分诊**——PortfolioPanel 每仓位 attention chip（紧急/注意/偏逆）按严重度排序置顶；③**遵循率成本**——JournalPanel 显示遵循 vs 偏离的均值差（偏离成本 R/笔）+ 按离场原因的盈亏拆解
 - 仓位按 symbol 持久化 localStorage `coinlens.position`，数据刷新时自动重新分析
 - **LTC 纯样本外回测（2026-08-25 第六轮，DEVLOG）**：`tests/backtest_ltc.py` 复用第 11 轮 harness 跑生产配置（LTC 从未参与调参）——1h +116.6R(98.7%)/4h +150.4R(87.0%, EV+0.301R)/1d +24.5R(86.5%)/1w +1.1R(19 笔小样本)；方向准确率 <50% 而利润为正，执行层优势在第四个标的上复现；未改任何生产参数

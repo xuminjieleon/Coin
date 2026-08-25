@@ -86,16 +86,22 @@ async def _derivatives_context(symbol: str, as_of_ms: int | None = None) -> tupl
         return daily.get("oiChangePct"), daily.get("fundingRate")
     oi_change = None
     funding = None
-    try:
-        hist = await binance.get_open_interest_hist(symbol)
-        oi_change = compute_oi_change_pct(hist)
-    except Exception:
-        pass
-    try:
-        premium = await binance.get_premium_index(symbol)
-        funding = float(premium["lastFundingRate"])
-    except Exception:
-        pass
+
+    async def _oi():
+        try:
+            hist = await binance.get_open_interest_hist(symbol)
+            return compute_oi_change_pct(hist)
+        except Exception:
+            return None
+
+    async def _funding():
+        try:
+            premium = await binance.get_premium_index(symbol)
+            return float(premium["lastFundingRate"])
+        except Exception:
+            return None
+
+    oi_change, funding = await asyncio.gather(_oi(), _funding())
     # Gate.io daily-history fallback when Binance live data is missing
     try:
         daily = derivs_store.daily_rates(symbol) or {}
