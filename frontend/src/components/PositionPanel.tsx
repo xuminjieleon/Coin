@@ -59,6 +59,37 @@ const LEVEL_CLASS: Record<string, string> = {
   danger: 'pos-item-danger',
 }
 
+const THESIS_LABEL: Record<string, string> = {
+  strong: '证据强',
+  intact: '证据完好',
+  weakened: '证据转弱',
+  broken: '证据破裂',
+}
+
+const THESIS_CLASS: Record<string, string> = {
+  strong: 'pos-thesis-strong',
+  intact: 'pos-thesis-intact',
+  weakened: 'pos-thesis-weakened',
+  broken: 'pos-thesis-broken',
+}
+
+function fmtR(v: number): string {
+  return `${v >= 0 ? '+' : ''}${v.toFixed(2)}R`
+}
+
+function fmtSignedScore(v: number): string {
+  return `${v > 0 ? '+' : ''}${v}`
+}
+
+function fmtEventTime(ms: number): string {
+  const d = new Date(ms)
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  const hh = String(d.getHours()).padStart(2, '0')
+  const mi = String(d.getMinutes()).padStart(2, '0')
+  return `${mm}-${dd} ${hh}:${mi}`
+}
+
 export default function PositionPanel({ symbol, interval, analysisTime }: Props) {
   const [saved, setSaved] = useState<SavedPosition | null>(() => loadSaved(symbol))
   const [direction, setDirection] = useState<'long' | 'short'>(saved?.direction ?? 'long')
@@ -68,6 +99,7 @@ export default function PositionPanel({ symbol, interval, analysisTime }: Props)
   const [leverage, setLeverage] = useState(saved?.leverage ?? '1')
   const [openedAt, setOpenedAt] = useState(saved?.openedAt ?? '')
   const [advice, setAdvice] = useState<PositionAdvice | null>(null)
+  const [ranDir, setRanDir] = useState<'long' | 'short'>('long')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
   const autoRunRef = useRef(false)
@@ -123,6 +155,7 @@ export default function PositionPanel({ symbol, interval, analysisTime }: Props)
           openedAt: toMs(input.openedAt),
         })
         setAdvice(res)
+        setRanDir(input.direction)
       } catch (e) {
         setErr(e instanceof Error ? e.message : String(e))
       } finally {
@@ -168,7 +201,7 @@ export default function PositionPanel({ symbol, interval, analysisTime }: Props)
       <div className="panel-title-row">
         <div className="panel-title">我的仓位</div>
         <SourceHint
-          text={`根据当前 ${interval} 盘面与校准后的计划几何（止损倍数、+R 减仓位、跟踪止盈、时间退出窗口）对持仓给出规则化建议：顺势/逆势检查、止损建议、减仓与保本移损提醒、剩余仓位跟踪止盈位（需要填写开仓时间）、时间退出提醒、保证金与强平价提示（需要填写杠杆与数量）。建议为纪律提示而非预测，请自行评估风险。`}
+          text={`根据当前 ${interval} 盘面与校准后的计划几何对持仓给出规则化建议。顶部为当前最优先动作与持仓证据状态（评分/结构/高周期/CVD 综合判定，描述性非预测）；顺势/逆势检查与决策卡同口径；填写开仓时间后额外提供：开仓时点决策回放（评分漂移+入场质量，仅用开仓前已收盘 K 线，无前视）、持仓期间结构 BOS/CHoCH 与扫流动性及 Wyckoff 事件、MFE/MAE 偏移与盈利回吐提醒、跟踪止盈位。另有：止损建议与宽度校验（过窄易被噪音扫损）、结构止损参考、止损贴池插针风险、止盈参考阶梯（盈利侧流动性池/价值区边缘/POC/区间极值，含可锁 +R）、资金费率 carry 成本（8h 结算）、48h 内高影响事件预警、时间退出窗口、保证金与强平价提示。建议为纪律提示而非预测，请自行评估风险。`}
         />
       </div>
       <div className="pos-form">
@@ -253,6 +286,9 @@ export default function PositionPanel({ symbol, interval, analysisTime }: Props)
       {err && <div className="pos-error">{err}</div>}
       {advice && (
         <div className="pos-result">
+          {advice.action && (
+            <div className={`pos-action pos-action-${advice.action.level}`}>{advice.action.text}</div>
+          )}
           <div className="pos-headline">
             <span>
               现价 <b>{formatPrice(advice.price)}</b>
@@ -262,6 +298,38 @@ export default function PositionPanel({ symbol, interval, analysisTime }: Props)
               {advice.pnlPct.toFixed(2)}% · {advice.unrealizedR >= 0 ? '+' : ''}
               {advice.unrealizedR.toFixed(2)}R
             </span>
+            {advice.thesisState && (
+              <span
+                className={THESIS_CLASS[advice.thesisState]}
+                title="持仓证据状态：评分 / 最新结构事件 / 高周期背景 / CVD 背离对持仓方向的综合判定（描述性，非预测）"
+              >
+                {THESIS_LABEL[advice.thesisState] ?? advice.thesisState}
+              </span>
+            )}
+            {advice.scoreAtOpen != null && advice.scoreNow != null && (
+              <span
+                title="开仓时点决策回放（仅用开仓前已收盘 K 线重算，与决策卡同口径）→ 当前评分"
+              >
+                评分 {fmtSignedScore(advice.scoreAtOpen)} →{' '}
+                <b
+                  className={
+                    (advice.scoreNow - advice.scoreAtOpen) * (ranDir === 'long' ? 1 : -1) <= -25
+                      ? 'pos-pnl-down'
+                      : (advice.scoreNow - advice.scoreAtOpen) * (ranDir === 'long' ? 1 : -1) >= 25
+                        ? 'pos-pnl-up'
+                        : undefined
+                  }
+                >
+                  {fmtSignedScore(advice.scoreNow)}
+                </b>
+              </span>
+            )}
+            {(advice.mfeR != null || advice.maeR != null) && (
+              <span title="持仓期最大有利偏移 / 最大不利偏移（基于开仓时间，正负均按本仓方向计）">
+                MFE {advice.mfeR != null ? fmtR(advice.mfeR) : '--'} · MAE{' '}
+                {advice.maeR != null ? fmtR(advice.maeR) : '--'}
+              </span>
+            )}
             {advice.barsHeld != null && <span>持仓 {advice.barsHeld} 根</span>}
             {advice.levels.liqPrice != null && (
               <span className="pos-pnl-down" title="隔离保证金近似强平价（未计维持保证金）">
@@ -269,6 +337,49 @@ export default function PositionPanel({ symbol, interval, analysisTime }: Props)
               </span>
             )}
           </div>
+          {!!advice.eventsSinceOpen?.length && (
+            <div className="pos-events">
+              <div className="pos-subhead">持仓期间事件</div>
+              <ul>
+                {advice.eventsSinceOpen.map((ev, i) => (
+                  <li
+                    key={i}
+                    className={
+                      ev.direction === 'bullish' ? 'pos-event-up' : ev.direction === 'bearish' ? 'pos-event-down' : undefined
+                    }
+                  >
+                    <span className="pos-event-time">{fmtEventTime(ev.time)}</span>
+                    <span>{ev.text}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {!!advice.takeProfitLadder?.length && (
+            <div className="pos-ladder">
+              <div className="pos-subhead">止盈参考阶梯（盈利侧候选位）</div>
+              <table className="pos-ladder-table">
+                <thead>
+                  <tr>
+                    <th>价位</th>
+                    <th>位置</th>
+                    <th>距离</th>
+                    <th>可锁</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {advice.takeProfitLadder.map((lv, i) => (
+                    <tr key={i}>
+                      <td>{formatPrice(lv.price)}</td>
+                      <td>{lv.label}</td>
+                      <td>{lv.distPct.toFixed(2)}%</td>
+                      <td>{fmtR(lv.rMultiple)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
           <ul className="pos-items">
             {advice.items.map((it, i) => (
               <li key={i} className={LEVEL_CLASS[it.level] ?? 'pos-item-info'}>

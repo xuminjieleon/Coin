@@ -366,6 +366,20 @@ export interface PositionAdviceItem {
   text: string
 }
 
+export interface PositionEvent {
+  time: number
+  kind: 'structure' | 'sweep' | 'wyckoff'
+  direction: 'bullish' | 'bearish' | null
+  text: string
+}
+
+export interface PositionLadderLevel {
+  price: number
+  label: string
+  distPct: number
+  rMultiple: number
+}
+
 export interface PositionAdvice {
   symbol: string
   interval: string
@@ -373,11 +387,19 @@ export interface PositionAdvice {
   pnlPct: number
   unrealizedR: number
   mfeR: number | null
+  maeR?: number | null
   barsHeld: number | null
+  scoreNow?: number
+  scoreAtOpen?: number | null
+  thesisState?: 'strong' | 'intact' | 'weakened' | 'broken' | null
+  eventsSinceOpen?: PositionEvent[]
+  takeProfitLadder?: PositionLadderLevel[]
+  action?: { level: 'ok' | 'info' | 'warn' | 'danger'; text: string } | null
   levels: {
     suggestedStop: number
     beTrigger: number
     trailStop: number | null
+    structureStop?: number | null
     liqPrice: number | null
   }
   items: PositionAdviceItem[]
