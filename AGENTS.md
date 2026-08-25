@@ -67,7 +67,7 @@
 - `GET/POST/DELETE /api/journal/trades[,/{id},/{id}/close]` → SQLite journal.db：`POST /trades`（快照 plan 可选，冻结开仓时几何）、`POST /trades/{id}/close {exit, reason}`（**平仓时用本地 K 线确定性重放计划**：止损→+beR减半保本→跟踪/目标→时间退出，同根 K 线保守盘口顺序=止损先判；planExit vs 实际 → adherence followed/deviated：同因或 ±0.5R 内=followed）、`GET /stats`（胜率/非亏损率/合计R/遵循率/分币种分周期；**盈利泄漏分析**：`byExitReason{reason:{count,sumR,avgR,winRate}}` 按离场原因拆解盈亏来源，`adherenceEv{followed,deviated:{count,sumR,avgR}}` 遵循 vs 偏离的均值差=偏离计划的 R 成本/笔——执行层优势是否兑现的直接度量）
 - `POST /api/portfolio/advise`：body `{positions[...]≤20, accountEquity?}` → `{positions[{price,notionalUsd,riskUsd,liqPrice,unrealizedPct,unrealizedR,barsHeld,attention{level(danger|warn|info|ok),text}}], netUsd, grossUsd, marginUsd, totalRiskUsd, riskPctOfEquity, correlatedPairs(|corr|≥0.7), betas(vs BTC), items[]}`——组合层风控：净/总敞口、集中度>50%警告、两两相关性（本地 1d 90 日）、风险预算占权益 >3%warn/>6%danger；**每仓位 attention 分诊**（danger：无止损/止损越强平价/超时间退出窗口；warn：浮亏 ≤-1R 或逆势 |评分|≥25；info：评分轻度反向；ok：顺势）——评分走扫描器口径（200 根，无 MTF/衍生品上下文），items 汇总"N 个仓位需立即处理"；跨仓位不漏管退出纪律
 - **derivatives 响应增强**：`topTraderRatio`（Gate.io top_lsr_size 大户持仓多空比）、`fundingHistory`、`historyStats{days, fundingPctl, oiUsdPctl, lsrPctl}`（相对本地持久化历史的分位数；days=时间跨度非行数）、`options` 扩展 `{rr25(25Δ call IV−put IV), maxPain{expiry,strike}, termStructure[]}`；每次调用快照入 derivs.db snapshots 表，`ensure_backfill` 按优先级链回填（Gate.io contract_stats 1d×1000+1h×720 含清算USD → 币安 futures/data 无清算、毫秒→秒归一化；6h 增量刷新，同符号并发等待防部分读）；**多源按列 UPSERT 合并**（NULL 不覆盖）
-- **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`、`indicators.cvd[]`（累计主动买卖差，K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias,cvdDiv}],alignment}`、`summary.tradePlan{direction,entry,stop,target1(null=跟踪止盈),beTrigger,beR,targetR(null),scaleOut,trailR,stopAtr,depthAtr,texitBars,fillBars,rr(null=跟踪),note}`——**几何按周期分化**（PLAN_GEOMETRY）：1h 0.75×ATR 回踩/2.5×ATR 止损/+0.1R 减半+保本/目标 0.75R/96 根退出（保本优先）；4h 0.75/1.2/+0.5R 减半保本/0.5R 跟踪止盈无固定目标/48 根退出/18 根成交窗口；1d 0.75/1.5/0.5R/0.5R 跟踪/24/9；1w 0.75/1.5/0.5R/0.75R 跟踪/24/8（**PLAN_THRESHOLD**：4h/1d/1w=|score|≥10、1h=25；校准依据与盲测数据见 DEVLOG 第 10/11 轮）
+- **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`、`indicators.cvd[]`（累计主动买卖差，K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias,cvdDiv}],alignment}`、`summary.tradePlan{direction,entry,stop,target1(null=跟踪止盈),beTrigger,beR,targetR(null),scaleOut,trailR,stopAtr,depthAtr,texitBars,fillBars,rr(null=跟踪),note}`——**几何按周期分化**（PLAN_GEOMETRY，第 13 轮 5 年重校准 2026-08-25，见 DEVLOG 第八轮）：1h 0.5×ATR 回踩/2.0×ATR 止损/+0.15R 减半+保本/目标 0.5R/96 根退出；4h 0.75/1.0/+0.75R 减半保本/0.35R 跟踪止盈无固定目标/48 根退出/18 根成交窗口；1d 1.0/1.2/0.5R/0.35R 跟踪/12 根/9；1w 0.75/1.5/0.5R/0.75R 跟踪/24/8（1w 未参与重校准，沿用第 11 轮）（**PLAN_THRESHOLD**：4h/1d/1w=|score|≥10、1h=25；校准依据与盲测数据见 DEVLOG 第 10/11/13 轮）
 
 ## 5. 当前状态
 
@@ -76,13 +76,16 @@
 - **前端**：全部面板就绪（DecisionCard/TradePlanCard/DerivativesPanel/VolumeProfilePanel/MacroPanel/OnchainPanel/OrderBookPanel/LiquidationPanel/CalendarPanel/PortfolioPanel/PositionPanel/JournalPanel/ScannerModal/MtfBar/SourceHint）；**移动端响应式适配已上线**（App.css 断点见 §3 布局；宏观表格改为 4 列两行自适应，修复了桌面端 360px 侧栏下走势列被裁切的历史问题）；`npm.cmd run build` tsc 零错误
 - **盈利扩展三杠杆已接线（2026-08-25）**：①**机会捕捉**——预警铃铛开启时每次刷新后台拉 `/api/scan`（服务端 5min 缓存）喂计划观察器：市场级**新计划/计划转向**推送（首个周期静默播种防风暴、每标的 30min 冷却、toast 点击切标的）+ 当前标的**回踩接近计划入场区**（≤0.3×ATR）与**挂单窗口到期**提醒（key=symbol|interval|direction，entry 随 ATR 漂移原地更新不重置计时，到期每窗口提醒一次）；②**组合分诊**——PortfolioPanel 每仓位 attention chip（紧急/注意/偏逆）按严重度排序置顶；③**遵循率成本**——JournalPanel 显示遵循 vs 偏离的均值差（偏离成本 R/笔）+ 按离场原因的盈亏拆解
 - 仓位按 symbol 持久化 localStorage `coinlens.position`，数据刷新时自动重新分析
+- **LTC 纯样本外回测（2026-08-25 第六轮，DEVLOG）**：`tests/backtest_ltc.py` 复用第 11 轮 harness 跑生产配置（LTC 从未参与调参）——1h +116.6R(98.7%)/4h +150.4R(87.0%, EV+0.301R)/1d +24.5R(86.5%)/1w +1.1R(19 笔小样本)；方向准确率 <50% 而利润为正，执行层优势在第四个标的上复现；未改任何生产参数
+- **成交量前 10 回测排名（2026-08-25 第七轮，DEVLOG）**：`tests/backtest_top10.py`（CONF 复用 backtest_ltc）——BTC +321.9R > ETH +314.1R > BNB +305.3R > SOL +303.1R > SUI/DOGE/ZEC/PYTH ~+275~283R > XRP +263.4R > TUTU +138.8R(历史短)；**10/10 币种全部盈利、37 个币种-周期组合 EV 无一为负**，1h EV 收敛于 +0.09~0.11R、4h +0.25~0.38R——跨币结构性优势；纯样本外 BNB 落在调参标的区间内（无明显币种偏斜）；未改任何生产参数
+- **五年扩展回测 + 第 13 轮几何重校准已采纳（2026-08-25 第八轮，DEVLOG/BACKTEST.md）**：`tests/backtest_5y.py`（BTC/ETH/BNB/SOL × 1h/4h/1d 各 5 年 + 1w 全历史）——旧几何 5 年基线四币合计 1h +1166.2R / 4h +1062.1R / 1d +145.8R / 1w +52.5R 且逐年全正；按 §7.3 新数据条款预登记协议（A 调参/B+C 盲测 + A+B 重调/C 盲测两阶段、单遍坐标下降、1w 排除）重校准 1h/4h/1d 几何并全部通过 C 段盲测（+99.8%/+49.2%/+38.9%，四币逐个改善），**PLAN_GEOMETRY 已更新**（1h 0.5/2.0/0.15R/0.5R 目标；4h 0.75/1.0/0.75R/0.35R 跟踪；1d 1.0/1.2/0.5R/0.35R 跟踪/12 根），1w 与阈值/成交窗口不动；SMC 单测通过、评分路径零变化；优化再次冻结
 
 ### 已知局限（诚实口径，UI tooltip 已标注）
-- **方向胜率上限 ~60%**：任何技术组件在 2 年大样本上无法稳定超过（多轮验证）；可靠优势在执行层（回踩入场+保本管理，非亏损率 ~82-98% 按周期），利润全部来自执行层——这是产品核心承诺，不是预测引擎
-- 1w 盲测样本不足（~46 笔）是已声明局限；回测未计手续费/滑点（净 EV 再减 0.03~0.06R）
+- **方向胜率上限 ~60%**：任何技术组件在 2 年大样本上无法稳定超过（多轮验证）；可靠优势在执行层（回踩入场+保本管理，非亏损率 1h ~97% / 1d ~86% / 4h ~79%（第 13 轮重校准后按周期分化，4h 以胜率换 EV）），利润全部来自执行层——这是产品核心承诺，不是预测引擎
+- 1w 盲测样本不足（105 笔/四币 5 年）是已声明局限；回测未计手续费/滑点（净 EV 再减 0.03~0.06R）
 - 清算数据是 Gate.io 统计口径而非逐笔 feed；订单簿是快照而非流；估算强平位未计维持保证金；链上实体标签数据不可达——均如实标注，不编造
 - 事件日历为本地手动维护（backend/data/events.json）
-- **策略优化已终止**（第 11b 轮结论固化，见 §7 维护规则）
+- **策略优化已终止**（第 11b 轮结论固化；第 13 轮为 §7.3 新数据条款下的唯一一次重开并已再次冻结，见 §7 维护规则）
 
 ### 运行环境
 
@@ -127,7 +130,7 @@
 
 1. **文档协议**：每次推进后更新本文件（当前状态/待办/契约变更），并在 DEVLOG.md 顶部追加该轮记录（背景/做法/数据/结论）。
 2. **决策权重/几何改动协议**：decision.py 权重注释记录校准依据；**改权重前必须重跑 `backend/tests/backtest_decision.py` 并检查 IS/OOS 两期一致性**。`_bt_cache.pkl` 会因 services/analysis/*.py 源码变化自动失效重算（约 8 分钟）。
-3. **策略优化已终止**（2026-08-22 第 11b 轮固化）：PLAN_GEOMETRY/PLAN_THRESHOLD 为最终生产配置，不再调参——门控维度两轮穷尽全部负贡献、几何六轴收敛内点最优、阈值全扫描到 10、方向预测上限 ~50-60% 为基本面约束、盲测折多重比较已多。**不要在无新数据维度的情况下重启参数优化**。若未来恢复：方向为加入美股/加密相关标的（MSTR/COIN/NDX，Yahoo 数据源已探测可达但需限流控制），并沿用防过拟合协议（OOS 只看一次、门控候选预定义、分币种交叉验证）。
+3. **策略优化已终止**（2026-08-22 第 11b 轮固化；**2026-08-25 第 13 轮按新数据条款重开一次并已再次冻结**）：第 13 轮以 5 年历史（2021-08 起的调参前时代为新维度）按预登记协议（两阶段盲测、单遍坐标下降、1w 排除、>5% 盲测提升+逐币全正+最差币守卫三重验收）重校准 1h/4h/1d 几何并全部通过——这是 §7.3 条款下唯一一次合法重开。此后：**不要在无新数据维度的情况下重启参数优化**。若未来恢复：方向为加入美股/加密相关标的（MSTR/COIN/NDX，Yahoo 数据源已探测可达但需限流控制），并沿用第 13 轮协议（OOS 只看一次、坐标轴值预定义、分币种交叉验证、两阶段盲测）。
 4. **回测证伪即删除**：零权重/负贡献因子从代码与 UI 删除（先例：图表形态、K线形态、factorContext chips、FVG/sweep/extension 决策分支——见 DEVLOG 12b 轮）；展示型数据（DerivativesPanel/MacroPanel）不属决策因子，保留。
 5. **klinecharts v10 API 要点**（与 v9 差异，改图表代码前必读）：
    - 数据只能通过 `chart.setDataLoader({getBars, subscribeBar, unsubscribeBar})` 喂入，`applyNewData/updateData` 已删除

@@ -23,6 +23,23 @@ Calibration notes:
     Note: 1w backtest records used warmup 170 (no EMA200) while production
     1w analysis may include it - second-order score-composition mismatch,
     documented. Fees/slippage NOT modeled (~maker 0.02%).
+  - Round 13 (2026-08-25, tests/backtest_5y.py, AGENTS.md §7.3 resumption
+    clause — new data dimension = 5-year history incl. the pre-2023 era
+    never sampled by round-11 tuning on 1h/4h; BTC/ETH/BNB/SOL, 43172/10372/
+    2832 decisions on 1h/4h/1d): pre-registered single-pass coordinate
+    descent from the incumbent, A tune / B+C blind then A+B re-tune / C blind
+    (one-shot each), capacity-constrained, acceptance = blind >+5% AND every
+    symbol blind >0 AND worst-symbol guard. 1w excluded (thin samples).
+    1h adopted (0.5, 2.0, 0.15, 0.5, 96): C-fold blind +714.0R vs incumbent
+        +357.4R (+99.8%), EV +0.169R, win 97.1%, worst symbol +156.1R vs
+        +86.4R. Phase 1 B+C blind +1388.5R vs +718.1R.
+    4h adopted (0.75, 1.0, 0.75, trail 0.35, 48): C-fold blind +470.6R vs
+        +315.3R (+49.2%), EV +0.446R, win 79.4%, worst symbol +111.2R vs
+        +68.0R. Win-rate traded for EV per profit-first objective.
+    1d adopted (1.0, 1.2, 0.5, trail 0.35, 12): C-fold blind +53.6R vs
+        +38.5R (+38.9%), EV +0.311R, win 86.0%, worst symbol +11.0R vs +6.3R.
+    1w unchanged (thin sample, pre-registered exclusion). Score weights
+    untouched (this round moved only trade-plan geometry). Fees not modeled.
   - Round 12 (2026-08-24, tests/profit3_factors.py + profit3_weights.py):
     NEW data dimensions (derivs percentiles from Gate.io history, macro
     linkage) tested for profit-first integration — 9 gates (funding/OI/LSR/
@@ -52,11 +69,12 @@ FUNDING_THRESHOLD = 0.0005  # 0.05%
 
 # interval -> (depth ATR, stop ATR, BE trigger R, runner target R (None=trail
 # managed), texit bars, runner trail R (None=off), order validity bars)
-# Round 11 calibration (profit-first), see module docstring.
+# Round 11 calibration (profit-first) for 1w; round 13 five-year recalibration
+# (2026-08-25, blind-validated on fold C, see module docstring) for 1h/4h/1d.
 PLAN_GEOMETRY = {
-    "1h": (0.75, 2.5, 0.10, 0.75, 96, None, 24),
-    "4h": (0.75, 1.2, 0.50, None, 48, 0.50, 18),
-    "1d": (0.75, 1.5, 0.50, None, 24, 0.50, 9),
+    "1h": (0.5, 2.0, 0.15, 0.5, 96, None, 24),
+    "4h": (0.75, 1.0, 0.75, None, 48, 0.35, 18),
+    "1d": (1.0, 1.2, 0.50, None, 12, 0.35, 9),
     "1w": (0.75, 1.5, 0.50, None, 24, 0.75, 8),
 }
 PLAN_DEFAULT_INTERVAL = "1h"

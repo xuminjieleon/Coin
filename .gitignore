@@ -13,6 +13,9 @@ backend/tests/_bt_cache.pkl
 backend/tests/_profit_cache.pkl
 backend/tests/_profit2_cache*.pkl
 backend/tests/_profit2_oos_cache_*.pkl
+backend/tests/_ltc_cache_*.pkl
+backend/tests/_t10_cache_*.pkl
+backend/tests/_5y_cache_*.pkl
 
 # 回测运行日志（结论已固化进 AGENTS.md，可由工具重跑）
 backend/tests/*.log
