@@ -4,6 +4,16 @@
 > 规范、API 契约与当前状态见 `AGENTS.md`——会话开始先读那个；本文件按需查阅（需要了解某功能"为什么这样做"、回测依据、踩坑记录时再来读）。
 > 约定：每次推进后在本文件**顶部**追加新条目（最新在前）。
 
+## 2026-08-25（第十三轮）外网访问：Cloudflare Tunnel 打通（替代端口转发）
+
+- **背景**：用户要求手机/电脑不在同一局域网时能访问 UI，先试路由器端口转发+DDNS。
+- **端口转发探测（不可行，证据链）**：网关 TL-WDR5620(192.168.0.1) UPnP 在线，但 `GetExternalIPAddress` 返回 **192.168.1.6（私网）**→ 上游还有一层电信"超级家庭网关"光猫（192.168.1.1，UPnP 关闭）；tracert 第 3 跳 **10.220.224.1（运营商 CGNAT 私网段）**——宽带线路无公网 IPv4，转发无从转起。本机 ipify 查到的 38.54.32.253 是 Zscaler 曼谷代理出口，非线路真实 IP（查公网 IP 必须走 UPnP/tracert 这类带外手段）。
+- **备选路径**：公网 IPv6 直连已就绪（2408:8240:c15:b8e4::1000、Vite 双栈、防火墙放行、本机自测 200），但依赖手机侧有 IPv6 且光猫 IPv6 防火墙未拦入站，未最终验证。
+- **采纳：Cloudflare Tunnel**：`tools\cloudflared.exe`（GitHub Releases 直链经 Zscaler 代理下载，第一次 EOF 中断、重试成功）+ quick tunnel 免账号模式，`--protocol http2` 强制 TCP（Zscaler 封 UDP QUIC）。**踩坑**：首次访问 403——Vite 6 默认校验 Host 头，`vite.config.ts` 需配 `allowedHosts: ['.trycloudflare.com']`（后缀匹配，quick tunnel 每次重启随机换域名）；修复后根页面与 `/api/health` 经隧道全部 200（Cloudflare 边缘 → tunnel → Vite → /api 代理 → FastAPI 全链路）。
+- **诚实口径**：quick tunnel 免费无 SLA、URL 重启即变、**公开可访问（无登录体系，拿到链接即可用，勿外传）**；长期使用应升级为 named tunnel（需 Cloudflare 账号+域名，可配 Access 认证）。隧道进程当前以后台任务运行，仅本会话生命周期。
+- **文档**：AGENTS.md 运行环境（隧道命令+踩坑+备选 IPv6）；.gitignore 加 `tools/cloudflared.exe`（52MB 二进制不进库）。
+- **验收**：用户手机实测外网访问 `https://extent-crossing-objectives-stevens.trycloudflare.com` 成功（2026-08-25 23:42 确认可用）。
+
 ## 2026-08-25（第十二轮）加载性能优化（连接池+并行化，整页 ~15s→~2.4s）
 
 - **背景**：用户反馈 UI 加载慢（K 线/分析等），要求优化（多线程/进程）。先实测定位再动手——**CPU 不是瓶颈**（`full_analysis` 500 根仅 13ms），瓶颈是**网络串行等待**：①binance/gateio 每次请求新建 `httpx.AsyncClient`（企业网 TLS 握手 1-2s/次）；②derivatives 路由 5 个币安调用顺序 await（最坏叠加 10s+）；③`ensure_backfill`（Gate.io 回填，首次 1d×1000+1h×720）阻塞响应；④前端 `refreshData` 先 await analysis 完才触发其余面板、订单簿/清算/链上/宏观各自内部串行。

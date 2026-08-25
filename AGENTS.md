@@ -97,6 +97,7 @@
 
 **D:\Work\Coin（企业网机器）**：
 - **启动后端前先查 8000 端口占用**（`netstat -ano | findstr :8000`）：曾发生旧会话进程残留、新进程未抢到端口、UI 全天由旧几何服务的事故（2026-08-25 第十一轮踩坑）
+- **外网访问拓扑（2026-08-25 实测）**：本机 → TL-WDR5620(192.168.0.1) → 电信"超级家庭网关"光猫(192.168.1.1，光猫路由模式) → 运营商 CGNAT（tracert 第 3 跳 10.220.224.1 私网段）——**IPv4 端口转发不可行**（宽带线路无公网 v4，除非找 ISP 申请）；**已验证可行的外网路径是 Cloudflare Tunnel**（`tools\cloudflared.exe tunnel --url http://localhost:5173 --protocol http2 --no-autoupdate`，免账号 quick tunnel，手机任意网络访问 `https://xxx.trycloudflare.com`；注意 URL 每次重启随机变化、无 SLA、公开可访问勿外传；`vite.config.ts` 已配 `allowedHosts: ['.trycloudflare.com']`——Vite 6 默认校验 Host 头，不加会被 403）；备选公网 IPv6 直连（2408: 前缀、防火墙 "CoinLens Web 5173 Public" 已放行、仅限手机有 IPv6 的场景，前缀随重拨变化）。本机出网走 Zscaler 代理（曼谷出口），ipify 等查到的是代理 IP 而非线路真实 IP
 - node/npm 不在系统 PATH，Node v22.14.0 位于 `D:\360se6\Application\components\Node\`（含 npm.cmd）；运行前端命令前先 `$env:Path = "D:\360se6\Application\components\Node;$env:Path"`
 - Python 用 `py -3.13`；backend/.venv 已重建并装好依赖
 - **npm 网络问题解法**：企业 DNS 把 `registry.npmjs.org`/`registry.npmmirror.com` 劫持到 127.0.0.1（黑洞），Zscaler 代理也封 registry，但**直连真实 IP 可通**（DNS 层劫持、IP 层未封）。解决：`frontend/tools/dns-override.cjs`（Node `--require` 钩子，仅对当前进程把两个 registry 域名映射回真实 IP）：
@@ -147,7 +148,7 @@
 
 ## 8. 待办
 
-1. **用户手机/窄窗口验收移动端 UI**：手机访问 `http://<内网IP>:5173`——Header 两行折叠、图表上方侧栏下方布局、扫描弹窗近全屏可横向滑动表格、toast 全宽、宏观表两行式；桌面端窄窗口拖到 ≤880px/≤640px 同样触发断点
+1. **用户手机/外网验收（已通过，2026-08-25）**：Cloudflare Tunnel 外网访问实测成功（quick tunnel URL 见 DEVLOG 第十三轮；URL 随隧道重启变化，重跑隧道命令取新地址）。移动端 UI 验收（Header 两行折叠/侧栏下折/扫描弹窗近全屏）随本次外网访问一并覆盖。
 2. **用户浏览器验收机构级 UI**：刷新 http://localhost:5173 复核——Header「⚡扫描」按钮、右侧栏三个 Tab、市场数据 Tab（宏观/链上/订单簿/清算）、交易 Tab（组合风控/仓位/日记）、衍生品分位数与 RR25/Max Pain、K 线点击回放
 3. **用户浏览器验收仓位建议增强（2026-08-25 两轮）**：交易 Tab「我的仓位」填写开仓时间后——顶部动作横幅（最优先纪律动作）、证据状态 chip、评分漂移 chip、MFE/MAE chip、持仓期间事件列表、止盈参考阶梯表；建议项（入场质量/止损宽度/贴池插针/资金费率 carry/事件预警/早离场/跟踪收紧）
 4. **用户浏览器验收盈利扩展三杠杆（2026-08-25）**：开启预警铃铛后等一次刷新——新计划/计划转向 toast（点击切标的）、当前标的回踩入场区与挂单到期提醒；交易 Tab 组合风控的每仓位紧急度 chip；交易日记的偏离成本行与离场原因拆解
