@@ -4,7 +4,35 @@
 > 规范、API 契约与当前状态见 `AGENTS.md`——会话开始先读那个；本文件按需查阅（需要了解某功能"为什么这样做"、回测依据、踩坑记录时再来读）。
 > 约定：每次推进后在本文件**顶部**追加新条目（最新在前）。
 
-## 2026-08-27（第十六轮）VPN 系统代理接入数据源链（fapi/Yahoo 复活）
+## 2026-08-27（第十八轮）推送通道扩展：企业微信群机器人（pushplus 实名墙绕行）
+
+- **背景**：用户配置 pushplus token 实测 `POST /notify/test` → `code=905 账户未进行实名认证`——pushplus 免费可用但发送前置实名（需向第三方网站交身份信息）。用户不愿实名，选择接入**企业微信群机器人**（免费、无条数限制、免实名）并"先要看到效果"；pushplus 通道保留为可切换选项。
+- **实现**（`services/notify.py` 重构为双通道 + notifier/router 增 `channel`/`wecomKey` 配置）：
+  - `send_wecom`：POST `qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...`，`msgtype=markdown`，标题无字段→以 `**标题**` 首行拼入 content；业务码 `errcode==0` 判成功；网络异常 3s 重试一次（业务错误不重试）；限 20 条/分钟/机器人（小时级推送远够）
+  - `send_by_channel(channel, credential, ...)` 统一分发；notifier `_credential()` 按通道取凭证（wecom→wecomKey / pushplus→token），enabled 但凭证缺失时仍每小时刷 planStates 不推送
+  - `update_config` 接受 `wecomKey`（**完整 webhook URL 或裸 key 均可**，自动剥 `key=` 参数）；`status()` 增 channel/wecomKeySet/wecomKeyMasked；`/notify/test` 按当前通道发送，无凭证 400 提示对应配置方法
+  - **默认通道切到 wecom**（用户主用）；既有 notify.json 里 pushplus token 保留（tokenSet=true），随时可 `POST {"channel":"pushplus"}` 切回
+- **验证**（重启后端）：health 200；GET /notify 返回 channel=wecom、wecomKeySet=false、nextRun=null（无凭证正确门控）；test 无 key → 400 提示 wecom 配置方法；假 key 端到端 → `wecom errcode=93000 invalid webhook url` 正确透传记录（qyapi.weixin.qq.com 本机直连可达，出口 124.90.146.103）；假 key 已清空
+- **遗留**：等用户建企业微信群机器人提供真实 webhook key（装企业微信 App→注册→建群→群设置→群机器人→添加→复制 Webhook 地址）→ `POST /api/notify {"channel":"wecom","wecomKey":"...","enabled":true}` → `/notify/test` 验收。无策略参数改动。
+
+## 2026-08-27（第十七轮）每小时决策信号微信推送（PushPlus）
+
+- **背景**：用户要求后端支持每小时把决策信息推到微信。三轮方案问答定稿：通道 **PushPlus**（免费 200 条/天，小时级推送用 ~24 条/天；直连可达，POST `www.pushplus.plus/send` 实测 200）；模式 **混合可配置，默认 events**（仅新计划/计划转向/计划消失时推一条聚合消息；mode=brief 切每小时全量简报）；标的 **BTC/ETH/SOL/BNB**（可配置）。
+- **消息样式迭代（用户多轮确认）**：①只讲交易操作（不展示评分/bias/regime 等分析细节）；②**不出现 0.15R 这类倍数，全部换算成实际价格**（beTrigger 直接是价格；跟踪止盈给"启动价"=entry±trailR×risk）；③止盈可能一开始没有（4h/1d/1w 跟踪族）——按决策结果如实省略；④挂单阶段每小时消息即最新计划快照（entry 随 ATR 漂移自动更新）；⑤**入场后的仓位管理不推送**（用户明确选择"仅计划信号"）——经讨论确认回测口径=开仓时计划冻结（journal_store.replay_plan：止损/beTrigger/texit 冻结、跟踪止盈是 MFE 棘轮不是计划目标、1h 固定目标也开仓即定死），推送若带"随新计划漂移的止盈"会与回测纪律矛盾，入场后管理继续走 App「我的仓位」。
+- **实现**：
+  - `services/analysis/context.py`（新）：从 routers/analysis.py 抽取共享管线——`klines_df/prev_day_levels/derivatives_context/mtf_context` + 高层封装 `run_analysis`（响应体与 GET /api/analysis 完全同构）+ `compute_oi_change_pct`（自 routers/derivatives.py 移入，derivatives.py 反向 re-export）。HTTPException 改为 `NoKlinesError`（路由层转 404）。**目的：推送与决策卡跑同一份代码，零行为漂移**。routers/analysis.py 变薄壳；position.py 导入改指向 context。
+  - `services/notify.py`（新）：PushPlus 客户端（markdown 模板、校验 body `code==200` 业务码、失败 3s 后重试一次、永不抛异常返回 `(ok,error)`）。
+  - `services/notifier.py`（新）：startup 挂 `asyncio.create_task`（强引用防 GC，同 derivatives backfill 模式）；**整点+5min 触发**（等 1h K 线收盘）；四标的并发跑 run_analysis；指纹=symbol→direction（entry 漂移不重发，与前端 alerts.ts 计划观察器同语义）持久化 `data/notify.json`；**首启动静默播种**防通知风暴；**分析失败的标的从指纹比对中排除**（网络抖动不产生假"计划消失"）；disabled/无 token 时仍每小时刷新 planStates 供状态预览；启动后 10s 首轮静默填充。渲染：events 块（新/转向/消失）与 brief 单行两种，`_fmt` 价格格式化（≥1000 千分位取整/≥1 两位小数/小币 6 位去尾）。
+  - `routers/notify.py`（新）：`GET /api/notify`（配置+lastRun/nextRun/lastError/recent10/planStates，token 打码）；`POST /api/notify`（enabled/mode/symbols/interval/token，校验 400；**任何配置变更重置播种**——防 symbols/interval 变化引发假事件风暴）；`POST /api/notify/test`（立即推测试消息，无 token 400）。
+  - `main.py`：startup 挂 `notifier.start()`，shutdown 增 `notify.close_client()`；`.gitignore` 增 `backend/data/notify.json`（含 token 密钥）。
+- **验证**（重启后端，全端点实测）：
+  - 回归：`/api/analysis?symbol=BTCUSDT` 200（score/bias/mtf/candles 完整）——context 抽取零行为变化；
+  - 校验：坏 mode/interval → 400；`/notify/test` 无 token → 400；
+  - 通道错误路径：假 token → `pushplus code=903 msg=用户令牌不正确` 正确透传并记录，不抛异常；
+  - 事件链路（monkeypatch send_markdown 冒烟，真实跑 run_analysis）：播种轮 0 推送 ✔；强制指纹不一致 → 【转向】块完整（入场/止损/止盈/减半保本价格全对）✔；【消失】块 ✔；brief 全量单行 ✔；首轮 planStates 预览四币计划真实数据（BTC/BNB 空头、ETH 多头、SOL CVD 共振空头——score 与 direction 不一致是 high_confidence CVD 路径压过评分，引擎既有行为）。
+  - 期间真实市场恰好 BTC 计划转向（long→short），反向印证指纹机制的必要性。
+- **踩坑**：**PowerShell 5.1 `Get-Content -Raw` + `Set-Content -Encoding UTF8` 批量替换会破坏 UTF-8 无 BOM 中文源文件**（Get-Content 默认按 ANSI 读 → 中文变乱码 `SyntaxError: unterminated string literal`）——本想用它批量改 position.py 的函数名，烧掉后 `git checkout --` 恢复，改用 Read/Edit 工具重做。**教训：涉及中文文件的正则替换永远用 Edit 工具，不用 PowerShell 管道**。
+- **遗留（待用户操作）**：pushplus.plus 微信扫码登录复制 token → `POST /api/notify {"token":"...","enabled":true}` → `POST /api/notify/test` 验收 → 等下一个整点+5min 看首推（events 模式首轮静默播种，最早事件在第二轮起）。前端设置面板未做（二期），配置走 API。无策略参数改动；优化不重开。
 
 - **背景**：用户连上 VPN 后要求重测。实测发现 VPN 是**系统代理模式**（注册表 ProxyEnable=1 + ProxyServer=127.0.0.1:13059，非 TUN 全局接管）——浏览器走代理，但 curl/python 直连不走（出口仍是电信 2408: 直连、fapi 仍解析到污染 IP 65.49.68.152/2001::）。**显式走代理（curl -x / httpx proxy=）后 fapi 全端点（含此前无镜像可用的 premiumIndex/futures/data）+ Yahoo query1/2 全部 200**（出口 IP 104.234.240.117）。
 - **决策**：用户选择"两者都接"——币安链与宏观链都利用系统代理。设计原则：**代理是优先级链中的一环而非全局开关**，VPN 关闭时零配置自动回退既有降级链（镜像/Gate.io）。

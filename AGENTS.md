@@ -39,7 +39,10 @@
                       ├─ services/macro.py         宏观联动(Yahoo日线+SQLite缓存+相关性)
                       ├─ services/scanner.py       全市场扫描(流动性前N跑引擎排序)
                       ├─ services/journal_store.py 交易日记(SQLite+计划重放+遵循率)
+                      ├─ services/notify.py        PushPlus微信推送通道(markdown+重试)
+                      ├─ services/notifier.py      每小时信号推送(整点+5min调度+计划指纹)
                       └─ services/analysis/        swings→smc→indicators→volume→decision
+                                                    └─ context.py 决策管线共享层(API与推送同源)
 ```
 
 > **数据模式**：不使用实时推送（无 WS）。统一为**手动刷新按钮 + 每 5 分钟自动刷新**（开关持久化 localStorage `coinlens.autoRefresh`），刷新时一次性重拉 analysis/derivatives/backtest 等，并把新 K 线尾部原地同步进图表（`syncBars`：时间戳等于最后一根→更新、更大→追加、更旧→忽略，不重置视图）。
@@ -68,6 +71,7 @@
 - `POST /api/portfolio/advise`：body `{positions[...]≤20, accountEquity?}` → `{positions[{price,notionalUsd,riskUsd,liqPrice,unrealizedPct,unrealizedR,barsHeld,attention{level(danger|warn|info|ok),text}}], netUsd, grossUsd, marginUsd, totalRiskUsd, riskPctOfEquity, correlatedPairs(|corr|≥0.7), betas(vs BTC), items[]}`——组合层风控：净/总敞口、集中度>50%警告、两两相关性（本地 1d 90 日）、风险预算占权益 >3%warn/>6%danger；**每仓位 attention 分诊**（danger：无止损/止损越强平价/超时间退出窗口；warn：浮亏 ≤-1R 或逆势 |评分|≥25；info：评分轻度反向；ok：顺势）——评分走扫描器口径（200 根，无 MTF/衍生品上下文），items 汇总"N 个仓位需立即处理"；跨仓位不漏管退出纪律
 - **derivatives 响应增强**：`topTraderRatio`（Gate.io top_lsr_size 大户持仓多空比）、`fundingHistory`、`historyStats{days, fundingPctl, oiUsdPctl, lsrPctl}`（相对本地持久化历史的分位数；days=时间跨度非行数）、`options` 扩展 `{rr25(25Δ call IV−put IV), maxPain{expiry,strike}, termStructure[]}`；每次调用快照入 derivs.db snapshots 表，`ensure_backfill` 按优先级链回填（Gate.io contract_stats 1d×1000+1h×720 含清算USD → 币安 futures/data 无清算、毫秒→秒归一化；6h 增量刷新，同符号并发等待防部分读）；**多源按列 UPSERT 合并**（NULL 不覆盖）
 - **analysis 响应增强字段**：`smc.orderBlocks[].quality / fvgs[].quality`（0-100）、`smc.sweepEvents[]`、`indicators.cvd[]`（累计主动买卖差，K 线 takerBuy 字段）、`volumeProfile.pocSeries[]/developingPoc`（滚动 POC）、`wyckoff{phase,events[]}`、`volatility{atrPct,bandwidthPct,squeeze,state}`、`cvdDivergence`、`mtf{list[{interval,score,bias,cvdDiv}],alignment}`、`summary.tradePlan{direction,entry,stop,target1(null=跟踪止盈),beTrigger,beR,targetR(null),scaleOut,trailR,stopAtr,depthAtr,texitBars,fillBars,rr(null=跟踪),note}`——**几何按周期分化**（PLAN_GEOMETRY，第 13 轮 5 年重校准 2026-08-25，见 DEVLOG 第八轮）：1h 0.5×ATR 回踩/2.0×ATR 止损/+0.15R 减半+保本/目标 0.5R/96 根退出；4h 0.75/1.0/+0.75R 减半保本/0.35R 跟踪止盈无固定目标/48 根退出/18 根成交窗口；1d 1.0/1.2/0.5R/0.35R 跟踪/12 根/9；1w 0.75/1.5/0.5R/0.75R 跟踪/24/8（1w 未参与重校准，沿用第 11 轮）（**PLAN_THRESHOLD**：4h/1d/1w=|score|≥10、1h=25；校准依据与盲测数据见 DEVLOG 第 10/11/13 轮）
+- `GET/POST /api/notify[,/test]` → 微信推送（**双通道可切换**：`channel='wecom'`（企业微信群机器人 webhook，免费无限制、免实名，消息收在「企业微信」App，**默认**）｜`'pushplus'`（免费 200 条/天但**需官网实名认证否则 905**，消息收在微信本体））：`GET` → `{enabled, mode('events'|'brief'), channel, symbols[], interval, tokenSet, tokenMasked, wecomKeySet, wecomKeyMasked, lastRun, nextRun, lastError, recent[10], planStates{symbol→{hasPlan,direction,entry,stop,target1,beTrigger,trailRef,fillBars,score,bias}|null}}`；`POST /api/notify` body `{enabled?, mode?, channel?, symbols?(1~10), interval?, token?, wecomKey?(完整 webhook URL 或裸 key 均可)}` 更新配置（校验 400；**任何变更重置计划指纹播种**防假事件风暴）；`POST /api/notify/test` 立即按当前通道推测试消息（无凭证 400）。**调度**：整点+5min（等 1h 收盘）对 symbols 并发跑 `services/analysis/context.run_analysis`（与 /api/analysis 同一份代码）；**指纹=symbol→direction**（entry 漂移不重发），持久化 `data/notify.json`（gitignored 含 token/key）；events 模式仅推【新】/【转向】/【消失】聚合消息（首轮静默播种），brief 模式每小时全量单行简报；消息只含交易操作的实际价格（入场/止损/止盈或跟踪启动价/减半保本价），无 R 倍数无评分；分析失败的标的不参与指纹比对（防假"消失"）；disabled 时仍每小时刷新 planStates 供预览；**入场后仓位管理不推送**（回测口径=开仓时计划冻结，管理位走 App 仓位面板，见 DEVLOG 第十七轮）
 
 ## 5. 当前状态
 
@@ -78,6 +82,7 @@
 - **连接池加固（2026-08-27 第十五轮）**：共享 client 经 `httpx.Limits(keepalive_expiry=60)` 剔除闲置连接（**坑：httpx 0.28 已移除 transport 的 keepalive_expiry 参数，只能走 Limits**）；`_fetch/_get` 遇传输错误（ConnectTimeout 除外——从未连上=真不可达，非僵死连接）用一次性新 client 重试一次、成功则 `_swap_client` 换池——防御长跑进程连接池僵死（08-25 启动的进程跑 1.5 天后对可达主机全部请求失败的事故，重启+此加固解决）；勿改回每请求新建 client，错误路径的一次性重建是防御逻辑
 - **系统代理（VPN）接入数据源链（2026-08-27 第十六轮）**：新增 `services/sysproxy.py`——运行时读注册表探测 Windows 系统代理（60s TTL；VPN 客户端通常以系统代理模式工作，httpx 不读 WinINET 设置只认环境变量），传输失败 300s 冷却快速失败，共享代理连接池带同样的 keepalive 僵死防御；**币安链插入"同主机经系统代理"环节**（binance.py `_get`/`get_depth`，独立冷却键 `fapi|sysproxy`——直连失败不阻塞代理尝试、反之亦然），**宏观 Yahoo 路由计划=直连双主机→代理双主机**（403 快速失败保留；直连 403+代理不可用=全路由封锁→15 分钟快速失败窗防每个序列重复撞墙）。代理是**链中一环非全局开关**：VPN 关闭自动回退既有降级链（镜像/Gate），零配置切换。`/api/sources` 新增 `systemProxy` 状态与各链代理环节描述
 - **盈利扩展三杠杆已接线（2026-08-25）**：①**机会捕捉**——预警铃铛开启时每次刷新后台拉 `/api/scan`（服务端 5min 缓存）喂计划观察器：市场级**新计划/计划转向**推送（首个周期静默播种防风暴、每标的 30min 冷却、toast 点击切标的）+ 当前标的**回踩接近计划入场区**（≤0.3×ATR）与**挂单窗口到期**提醒（key=symbol|interval|direction，entry 随 ATR 漂移原地更新不重置计时，到期每窗口提醒一次）；②**组合分诊**——PortfolioPanel 每仓位 attention chip（紧急/注意/偏逆）按严重度排序置顶；③**遵循率成本**——JournalPanel 显示遵循 vs 偏离的均值差（偏离成本 R/笔）+ 按离场原因的盈亏拆解
+- **每小时微信推送已上线（2026-08-27 第十七轮，待用户配置 token 验收）**：`services/notify.py`（PushPlus 通道）+ `services/notifier.py`（整点+5min 调度、计划指纹、events/brief 双模式）+ `routers/notify.py`（配置/状态/test API）；决策管线抽取为 `services/analysis/context.py` 供 API 与推送同源复用（analysis/position 路由已切换，行为零变化，回归通过）；消息只含交易操作实际价格；**入场后仓位管理不推送**（口径见 DEVLOG 第十七轮）
 - 仓位按 symbol 持久化 localStorage `coinlens.position`，数据刷新时自动重新分析
 - **LTC 纯样本外回测（2026-08-25 第六轮，DEVLOG）**：`tests/backtest_ltc.py` 复用第 11 轮 harness 跑生产配置（LTC 从未参与调参）——1h +116.6R(98.7%)/4h +150.4R(87.0%, EV+0.301R)/1d +24.5R(86.5%)/1w +1.1R(19 笔小样本)；方向准确率 <50% 而利润为正，执行层优势在第四个标的上复现；未改任何生产参数
 - **用户 Pine 脚本对比回测（2026-08-26 第十四轮，DEVLOG）**：`tests/backtest_pine.py`（每 symbol 一 worker 并发）忠实复刻用户三个 TradingView Pine 脚本并与生产 1h/4h 策略在同一 5 年窗口/同一费率下对比——生产策略 MAR 28~71（1h）/15~25（4h）vs Pine 0.8~2.6、回撤 3~4%（1h）/5~6%（4h）vs 21~38%、逐年全正（Pine 单笔 EV 更高但笔数少 17 倍且 BTC 有亏损年）；4h 单笔净 EV +0.36~0.41R 约为 1h 的 3 倍但权益回撤更大、非亏损率更低——1h 曲线更稳、4h 执行可行性更高；CoinLens 侧直接复用 `_5y_cache_*` 记录缓存零重算；无生产代码改动
@@ -158,4 +163,5 @@
 2. **用户浏览器验收机构级 UI**：刷新 http://localhost:5173 复核——Header「⚡扫描」按钮、右侧栏三个 Tab、市场数据 Tab（宏观/链上/订单簿/清算）、交易 Tab（组合风控/仓位/日记）、衍生品分位数与 RR25/Max Pain、K 线点击回放
 3. **用户浏览器验收仓位建议增强（2026-08-25 两轮）**：交易 Tab「我的仓位」填写开仓时间后——顶部动作横幅（最优先纪律动作）、证据状态 chip、评分漂移 chip、MFE/MAE chip、持仓期间事件列表、止盈参考阶梯表；建议项（入场质量/止损宽度/贴池插针/资金费率 carry/事件预警/早离场/跟踪收紧）
 4. **用户浏览器验收盈利扩展三杠杆（2026-08-25）**：开启预警铃铛后等一次刷新——新计划/计划转向 toast（点击切标的）、当前标的回踩入场区与挂单到期提醒；交易 Tab 组合风控的每仓位紧急度 chip；交易日记的偏离成本行与离场原因拆解
-5. 未排期迭代方向：AI 盘面解读（LLM 汇总各维度）、策略回测平台、可见区域成交量分布、按 interval 动态轮询周期、美股/加密相关标的（MSTR/COIN/NDX）
+5. **用户验收微信推送（2026-08-27 第十七轮）**：pushplus.plus 扫码登录复制 token → `POST /api/notify {"token":"...","enabled":true}` → `POST /api/notify/test` 收到测试消息 → 等下一个整点+5min 确认调度运行（events 模式首轮静默播种，事件从第二轮起推）；前端设置面板未做（配置走 API），如需 UI 再排期
+6. 未排期迭代方向：AI 盘面解读（LLM 汇总各维度）、策略回测平台、可见区域成交量分布、按 interval 动态轮询周期、美股/加密相关标的（MSTR/COIN/NDX）、微信推送前端设置面板

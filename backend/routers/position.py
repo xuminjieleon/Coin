@@ -32,11 +32,11 @@ import time
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from routers.analysis import (
+from services.analysis.context import (
     ALLOWED_INTERVALS,
-    _derivatives_context,
-    _mtf_context,
-    _prev_day_levels,
+    derivatives_context,
+    mtf_context,
+    prev_day_levels,
 )
 from routers.calendar import upcoming_events
 from services import derivs_store, kline_cache
@@ -111,9 +111,9 @@ async def advise_position(pos: PositionInput):
             end_bar = bar_start - step
             rows, prev, mtf, (oi, funding) = await asyncio.gather(
                 kline_cache.get_klines(symbol, pos.interval, WINDOW, end_time=end_bar),
-                _prev_day_levels(symbol, pos.interval, as_of_ms=pos.openedAt),
-                _mtf_context(symbol, pos.interval, as_of_ms=end_bar),
-                _derivatives_context(symbol, as_of_ms=pos.openedAt),
+                prev_day_levels(symbol, pos.interval, as_of_ms=pos.openedAt),
+                mtf_context(symbol, pos.interval, as_of_ms=end_bar),
+                derivatives_context(symbol, as_of_ms=pos.openedAt),
             )
             df = kline_cache.rows_to_df(rows)
             if len(df) < 60:
@@ -147,9 +147,9 @@ async def advise_position(pos: PositionInput):
 
     rows, prev_day, mtf, (oi_change, funding), score_at_open, long_rows = await asyncio.gather(
         kline_cache.get_klines(symbol, pos.interval, WINDOW),
-        _prev_day_levels(symbol, pos.interval),
-        _mtf_context(symbol, pos.interval),
-        _derivatives_context(symbol),
+        prev_day_levels(symbol, pos.interval),
+        mtf_context(symbol, pos.interval),
+        derivatives_context(symbol),
         _score_at_open(),
         _long_window(),
     )

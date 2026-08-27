@@ -3,23 +3,14 @@ import asyncio
 from fastapi import APIRouter, HTTPException, Query
 
 from services import binance, derivs_store, gateio
+from services.analysis.context import compute_oi_change_pct
 
 router = APIRouter(prefix="/api")
 
 # strong references to background backfill tasks (prevent mid-run GC)
 _bg_tasks: set = set()
 
-
-def compute_oi_change_pct(hist: list) -> float | None:
-    """OI change % between latest entry and the one ~24h before (1h period, limit 30)."""
-    if not hist or len(hist) < 2:
-        return None
-    latest = float(hist[-1]["sumOpenInterest"])
-    idx = -25 if len(hist) >= 25 else 0
-    base = float(hist[idx]["sumOpenInterest"])
-    if base == 0:
-        return None
-    return (latest - base) / base * 100.0
+__all__ = ["router", "compute_oi_change_pct"]
 
 
 async def _binance_derivatives(symbol: str, result: dict) -> bool:

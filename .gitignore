@@ -26,6 +26,9 @@ backend/data/*.log
 # K 线本地磁盘缓存（不可变历史数据，自动重建）
 backend/data/cache/
 
+# 微信推送配置与状态（含 pushplus token，勿提交）
+backend/data/notify.json
+
 # 本地环境
 *.log.tmp
 .DS_Store
