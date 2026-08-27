@@ -9,11 +9,19 @@ Design (agreed with the user, 2026-08-27):
   gone, one aggregated message. First cycle after (re)seed is silent.
 - mode "brief": one message per hour with every configured symbol's plan
   snapshot (plan fields drift with ATR — each message is the latest plan).
+- Multi-interval (2026-08-27): config "intervals" is a list (e.g.
+  ["1h","4h"]); every hourly cycle analyses symbols x intervals
+  concurrently. 4h plan state only changes when a 4h bar closes, so its
+  events fire at most every 4 hours. Messages carry the interval tag
+  (e.g. "【新】BTCUSDT 4h 做多"). Legacy single "interval" strings migrate
+  to a one-element list (fingerprint reseeded — key shape changed from
+  symbol to symbol|interval).
 - Position management after entry is NOT pushed (user decision): the pushed
   plan is the pending-order signal; entry-time geometry freezes on fill,
   see journal_store.replay_plan / App position panel.
-- Fingerprint = symbol -> direction (entry drift does NOT re-fire, same
-  semantics as the frontend plan watcher in frontend/src/utils/alerts.ts).
+- Fingerprint = "symbol|interval" -> direction (entry drift does NOT
+  re-fire, same semantics as the frontend plan watcher in
+  frontend/src/utils/alerts.ts).
 - Symbols whose analysis FAILED are excluded from fingerprint comparison
   (a network hiccup must not push a fake "plan gone").
 - Config + state persist to backend/data/notify.json (gitignored: token).
@@ -37,12 +45,24 @@ DEFAULT_CFG = {
     "mode": "events",
     "channel": "wecom",  # "wecom" (企业微信群机器人) | "pushplus"
     "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT"],
-    "interval": "1h",
+    "intervals": ["1h"],
     "token": "",       # pushplus token
     "wecomKey": "",    # WeCom group robot webhook key
     "seeded": False,
     "seenPlans": {},
 }
+
+
+def _norm_intervals(raw) -> list[str]:
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple)):
+        return ["1h"]
+    out: list[str] = []
+    for itv in raw:
+        if itv in ALLOWED_INTERVALS and itv not in out:
+            out.append(itv)
+    return out or ["1h"]
 
 _cfg: dict = dict(DEFAULT_CFG)
 _state: dict = {"lastRun": None, "lastError": None, "recent": [], "planStates": {}}
@@ -60,6 +80,15 @@ def _load() -> None:
     if isinstance(raw, dict):
         merged = dict(DEFAULT_CFG)
         merged.update({k: raw[k] for k in DEFAULT_CFG if k in raw})
+        # legacy single-interval config -> list; fingerprint key shape changes
+        # (symbol -> symbol|interval), so reseed silently instead of firing a
+        # storm of fake events
+        if "intervals" not in raw:
+            legacy = raw.get("interval")
+            merged["intervals"] = _norm_intervals([legacy] if legacy else None)
+            merged["seeded"] = False
+            merged["seenPlans"] = {}
+        merged["intervals"] = _norm_intervals(merged["intervals"])
         _cfg = merged
 
 
@@ -195,41 +224,45 @@ async def _run_once(allow_push: bool) -> None:
     _state["lastRun"] = int(time.time() * 1000)
 
     symbols = [s for s in _cfg["symbols"] if s]
-    interval = _cfg["interval"]
-    analyses = await asyncio.gather(*[_safe_analysis(s, interval) for s in symbols])
+    intervals = _norm_intervals(_cfg.get("intervals"))
+    jobs = [(s, itv) for itv in intervals for s in symbols]
+    analyses = await asyncio.gather(*[_safe_analysis(s, itv) for s, itv in jobs])
 
-    plans: dict[str, dict | None] = {}
-    states: dict[str, dict | None] = {}
-    failed: set[str] = set()
-    for sym, analysis in zip(symbols, analyses):
+    plans: dict[tuple[str, str], dict | None] = {}
+    states: dict[str, dict[str, dict | None]] = {itv: {} for itv in intervals}
+    failed: set[tuple[str, str]] = set()
+    for (sym, itv), analysis in zip(jobs, analyses):
         if analysis is None:
-            failed.add(sym)
-            plans[sym] = None
-            states[sym] = None
+            failed.add((sym, itv))
+            plans[(sym, itv)] = None
+            states[itv][sym] = None
         else:
             plan = (analysis.get("summary") or {}).get("tradePlan")
-            plans[sym] = plan
-            states[sym] = _plan_state(sym, analysis)
+            plans[(sym, itv)] = plan
+            states[itv][sym] = _plan_state(sym, analysis)
     _state["planStates"] = states
 
     # disabled / unconfigured: still refresh planStates for the status preview
     if not _cfg["enabled"] or not _credential():
-        if failed and len(failed) == len(symbols):
-            _set_error(f"analysis failed for all symbols: {sorted(failed)}")
+        if failed and len(failed) == len(jobs):
+            _set_error(f"analysis failed for all symbol/interval pairs: {sorted(failed)}")
         return
 
-    if failed and len(failed) == len(symbols):
-        _set_error(f"analysis failed for all symbols: {sorted(failed)}")
+    if failed and len(failed) == len(jobs):
+        _set_error(f"analysis failed for all symbol/interval pairs: {sorted(failed)}")
         return
 
-    current = {sym: p["direction"] for sym, p in plans.items()
-               if p and sym not in failed}
+    def fp_key(sym: str, itv: str) -> str:
+        return f"{sym}|{itv}"
 
-    # --- fingerprint comparison (failed symbols keep their previous state) ---
-    events: list[tuple[str, str, dict | None, str | None]] = []
+    current = {fp_key(sym, itv): p["direction"]
+               for (sym, itv), p in plans.items() if p and (sym, itv) not in failed}
+
+    # --- fingerprint comparison (failed pairs keep their previous state) ---
+    events: list[tuple[str, str, str, dict | None, str | None]] = []
     if not _cfg["seeded"]:
         if failed:
-            # partial seed: keep old fingerprints for failed symbols
+            # partial seed: keep old fingerprints for failed pairs
             seeded = dict(_cfg["seenPlans"])
             seeded.update(current)
             _cfg["seenPlans"] = seeded
@@ -240,28 +273,29 @@ async def _run_once(allow_push: bool) -> None:
         if _cfg["mode"] == "events":
             return  # silent seeding: no storm on first sight
     else:
-        for sym in symbols:
-            if sym in failed:
+        for sym, itv in jobs:
+            if (sym, itv) in failed:
                 continue
-            prev = _cfg["seenPlans"].get(sym)
-            cur = current.get(sym)
+            k = fp_key(sym, itv)
+            prev = _cfg["seenPlans"].get(k)
+            cur = current.get(k)
             if prev == cur:
                 continue
             if prev is None and cur is not None:
-                events.append(("新", sym, plans[sym], None))
+                events.append(("新", sym, itv, plans[(sym, itv)], None))
             elif prev is not None and cur is None:
-                events.append(("消失", sym, None, prev))
+                events.append(("消失", sym, itv, None, prev))
             else:
-                events.append(("转向", sym, plans[sym], prev))
+                events.append(("转向", sym, itv, plans[(sym, itv)], prev))
         new_seen = dict(_cfg["seenPlans"])
-        for sym in symbols:
-            if sym in failed:
+        for sym, itv in jobs:
+            if (sym, itv) in failed:
                 continue
-            d = current.get(sym)
+            d = current.get(fp_key(sym, itv))
             if d:
-                new_seen[sym] = d
+                new_seen[fp_key(sym, itv)] = d
             else:
-                new_seen.pop(sym, None)
+                new_seen.pop(fp_key(sym, itv), None)
         _cfg["seenPlans"] = new_seen
         _save()
 
@@ -270,12 +304,13 @@ async def _run_once(allow_push: bool) -> None:
             return
         title = f"CoinLens 信号 {_now_label()}"
         blocks: list[str] = []
-        for kind, sym, plan, prev_dir in events:
+        for kind, sym, itv, plan, prev_dir in events:
+            tag = f"{sym} {itv} "
             if kind == "消失":
                 d = "多头" if prev_dir == "long" else "空头"
-                blocks.append(f"【消失】{sym} {d}计划已消失")
+                blocks.append(f"【消失】{tag}{d}计划已消失")
                 continue
-            head = f"【{kind}】{sym} "
+            head = f"【{kind}】{tag}"
             if kind == "转向":
                 head += f"{'做多' if prev_dir == 'long' else '做空'} → "
             head += "做多" if plan["direction"] == "long" else "做空"
@@ -283,14 +318,18 @@ async def _run_once(allow_push: bool) -> None:
         content = "\n----------\n".join(blocks)
     else:  # brief
         title = f"CoinLens 每小时提示 {_now_label()}"
+        multi = len(intervals) > 1
         lines = []
-        for sym in symbols:
-            if sym in failed:
-                lines.append(f"{sym}：本轮分析失败")
-            elif plans[sym]:
-                lines.append(f"{sym}：{_plan_oneline(plans[sym])}")
-            else:
-                lines.append(f"{sym}：观望")
+        for itv in intervals:
+            if multi:
+                lines.append(f"— {itv} —")
+            for sym in symbols:
+                if (sym, itv) in failed:
+                    lines.append(f"{sym}：本轮分析失败")
+                elif plans[(sym, itv)]:
+                    lines.append(f"{sym}：{_plan_oneline(plans[(sym, itv)])}")
+                else:
+                    lines.append(f"{sym}：观望")
         content = "\n".join(lines)
 
     if not allow_push:
@@ -342,11 +381,11 @@ def start() -> None:
 
 
 def update_config(enabled: bool | None = None, mode: str | None = None,
-                  symbols: list[str] | None = None, interval: str | None = None,
+                  symbols: list[str] | None = None, intervals: list[str] | None = None,
                   token: str | None = None, channel: str | None = None,
                   wecom_key: str | None = None) -> None:
     """Apply a config patch and re-seed the plan watcher (avoids a storm of
-    fake 'new plan' events for symbols added / interval changed)."""
+    fake 'new plan' events for symbols added / intervals changed)."""
     global _cfg
     if enabled is not None:
         _cfg["enabled"] = bool(enabled)
@@ -354,8 +393,8 @@ def update_config(enabled: bool | None = None, mode: str | None = None,
         _cfg["mode"] = mode
     if symbols is not None:
         _cfg["symbols"] = symbols
-    if interval is not None:
-        _cfg["interval"] = interval
+    if intervals is not None:
+        _cfg["intervals"] = _norm_intervals(intervals)
     if token is not None:
         _cfg["token"] = token.strip()
     if channel is not None:
@@ -405,7 +444,7 @@ def status() -> dict:
         "mode": _cfg["mode"],
         "channel": _cfg["channel"],
         "symbols": _cfg["symbols"],
-        "interval": _cfg["interval"],
+        "intervals": _norm_intervals(_cfg.get("intervals")),
         "tokenSet": bool(token),
         "tokenMasked": masked,
         "wecomKeySet": bool(key),

@@ -14,7 +14,8 @@ class NotifyConfig(BaseModel):
     mode: str | None = None
     channel: str | None = None
     symbols: list[str] | None = Field(default=None, min_length=1, max_length=10)
-    interval: str | None = None
+    intervals: list[str] | None = Field(default=None, min_length=1, max_length=4)
+    interval: str | None = None  # legacy single-interval form -> intervals=[x]
     token: str | None = Field(default=None, min_length=1, max_length=64)
     wecomKey: str | None = Field(default=None, min_length=1, max_length=256)
 
@@ -32,6 +33,15 @@ async def update_notify_config(cfg: NotifyConfig):
         raise HTTPException(status_code=400, detail=f"channel must be one of {sorted(notify.CHANNELS)}")
     if cfg.interval is not None and cfg.interval not in ALLOWED_INTERVALS:
         raise HTTPException(status_code=400, detail=f"interval must be one of {sorted(ALLOWED_INTERVALS)}")
+    intervals = None
+    if cfg.intervals is not None:
+        bad = [itv for itv in cfg.intervals if itv not in ALLOWED_INTERVALS]
+        if bad:
+            raise HTTPException(status_code=400,
+                                detail=f"intervals must be a subset of {sorted(ALLOWED_INTERVALS)}; got {bad}")
+        intervals = cfg.intervals
+    elif cfg.interval is not None:
+        intervals = [cfg.interval]
     symbols = None
     if cfg.symbols is not None:
         symbols = [s.strip().upper() for s in cfg.symbols if s and s.strip()]
@@ -42,7 +52,7 @@ async def update_notify_config(cfg: NotifyConfig):
         mode=cfg.mode,
         channel=cfg.channel,
         symbols=symbols,
-        interval=cfg.interval,
+        intervals=intervals,
         token=cfg.token,
         wecom_key=cfg.wecomKey,
     )
