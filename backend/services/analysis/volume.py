@@ -19,7 +19,7 @@ def _bar_bin_matrix(df: pd.DataFrame, bins: int) -> tuple[np.ndarray, float, flo
     width = (p_hi - p_lo) / bins
     mat = np.zeros((n, bins))
     for i in range(n):
-        first = max(0, int((lows[i] - p_lo) / width))
+        first = max(0, min(bins - 1, int((lows[i] - p_lo) / width)))
         last = min(bins - 1, int((highs[i] - p_lo) / width))
         if last < first:
             first, last = last, first
@@ -46,7 +46,7 @@ def volume_profile(df: pd.DataFrame, lookback: int = 300) -> dict:
         lo = float(row["low"])
         hi = float(row["high"])
         v = float(row["volume"])
-        first = max(0, int((lo - price_low) / width))
+        first = max(0, min(BINS - 1, int((lo - price_low) / width)))
         last = min(BINS - 1, int((hi - price_low) / width))
         if last < first:
             first, last = last, first
