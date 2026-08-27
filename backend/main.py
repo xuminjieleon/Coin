@@ -16,7 +16,7 @@ from routers import (
     sources,
     symbols,
 )
-from services import binance, gateio
+from services import binance, gateio, sysproxy
 
 app = FastAPI(title="CoinLens")
 
@@ -25,6 +25,7 @@ app = FastAPI(title="CoinLens")
 async def _close_http_clients() -> None:
     await binance.close_client()
     await gateio.close_client()
+    await sysproxy.close_client()
 
 app.add_middleware(
     CORSMiddleware,

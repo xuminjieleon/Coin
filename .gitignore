@@ -20,6 +20,9 @@ backend/tests/_5y_cache_*.pkl
 # 回测运行日志（结论已固化进 AGENTS.md，可由工具重跑）
 backend/tests/*.log
 
+# 后端运行时日志（隐藏启动命令的重定向输出，每次重启重写）
+backend/data/*.log
+
 # K 线本地磁盘缓存（不可变历史数据，自动重建）
 backend/data/cache/
 

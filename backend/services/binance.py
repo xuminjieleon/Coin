@@ -1,9 +1,11 @@
 """Binance futures API async client.
 
 Failover strategy: always try the official fapi.binance.com first; when it is
-unreachable, fall back to the public market-data mirror (data-api.binance.vision)
-for klines/exchangeInfo only. Futures-only endpoints (OI, funding, ratios) have
-no mirror and raise 502, which routers convert to null fields.
+unreachable, retry the same host through the Windows system proxy when one
+is configured (VPN clients — see services/sysproxy.py), then fall back to
+the public market-data mirror (data-api.binance.vision) for
+klines/exchangeInfo only. Futures-only endpoints (OI, funding, ratios) have
+no mirror; the proxy link is what restores them on VPN'd networks.
 
 Hosts that fail consecutively are marked down for a cooldown window so repeated
 requests fail fast (short timeout) instead of stalling 10s every time.
@@ -15,6 +17,7 @@ import httpx
 from fastapi import HTTPException
 
 from config import BINANCE_FAPI, BINANCE_SPOT_MIRROR
+from services import sysproxy
 
 # Short timeout for the primary attempt: fast failover when the official host
 # is blocked (connection RST/timeout). The mirror gets a more generous budget.
@@ -55,6 +58,11 @@ async def get_mirror_json(path: str, params: dict | None = None) -> Any:
 _host_down_until: dict[str, float] = {}
 _HOST_COOLDOWN = 300.0  # seconds
 
+# separate cooldown key for the fapi-via-system-proxy link (independent of
+# the direct host: a down direct route must not block the proxy attempt and
+# vice versa)
+_FAPI_PROXY_KEY = f"{BINANCE_FAPI}|sysproxy"
+
 
 def _host_down(host: str) -> bool:
     return _host_down_until.get(host, 0.0) > time.monotonic()
@@ -87,14 +95,38 @@ def _cache_set(key: str, data: Any, ttl: float) -> None:
 # request (the enterprise network's handshake costs 1-2s each, which made
 # sequential derivative calls take 10s+ before pooling). Per-request
 # timeouts still apply; connections are pooled across requests.
+# keepalive_expiry drops idle sockets before the server does — without it a
+# long-running process can wedge on server-closed keep-alive sockets
+# (observed 2026-08-27: 1.5-day-old process failing on hosts a fresh
+# process reached fine). Do NOT revert to per-request clients; the fresh
+# client below is an error-path recovery only.
+_POOL_KEEPALIVE = 60.0
 _client: httpx.AsyncClient | None = None
+
+
+def _new_pool() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=_PRIMARY_TIMEOUT,
+        limits=httpx.Limits(keepalive_expiry=_POOL_KEEPALIVE),
+    )
 
 
 def _shared_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=_PRIMARY_TIMEOUT)
+        _client = _new_pool()
     return _client
+
+
+async def _swap_client(fresh: httpx.AsyncClient) -> None:
+    """Adopt `fresh` as the shared pool, closing the previous one."""
+    global _client
+    old, _client = _client, fresh
+    if old is not None and not old.is_closed:
+        try:
+            await old.aclose()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def close_client() -> None:
@@ -105,9 +137,41 @@ async def close_client() -> None:
 
 
 async def _fetch(url: str, params: dict | None, timeout: httpx.Timeout) -> Any:
-    resp = await _shared_client().get(url, params=params, timeout=timeout)
+    try:
+        resp = await _shared_client().get(url, params=params, timeout=timeout)
+    except httpx.ConnectTimeout:
+        raise  # never connected — host genuinely unreachable, not a stale pool
+    except httpx.TransportError:
+        # A pooled socket may have been closed by the server while idle.
+        # Retry once on a brand-new connection; if that works the old pool
+        # was stale, so adopt the fresh client for subsequent requests.
+        fresh = _new_pool()
+        try:
+            resp = await fresh.get(url, params=params, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            await fresh.aclose()
+            raise
+        await _swap_client(fresh)
     resp.raise_for_status()
     return resp.json()
+
+
+async def _fapi_via_proxy(path: str, params: dict | None) -> Any:
+    """Official fapi endpoint through the Windows system proxy (VPN link).
+
+    Sits between the direct official attempt and the mirror/other-source
+    fallbacks: restores the futures-only endpoints (premiumIndex,
+    futures/data/*) when only the proxied route reaches fapi. Any failure
+    (incl. HTTP status — VPN exit may be geo-blocked) cools this link down
+    for 300s; returns None so callers fall through to the next source.
+    """
+    if _host_down(_FAPI_PROXY_KEY):
+        return None
+    try:
+        return await sysproxy.fetch_json(f"{BINANCE_FAPI}{path}", params=params, timeout=6.0)
+    except Exception:  # noqa: BLE001 - proxy absent/broken/geo-blocked
+        _mark_host_down(_FAPI_PROXY_KEY)
+        return None
 
 
 async def _get(path: str, params: dict | None = None, cache_ttl: float = 0) -> Any:
@@ -129,6 +193,11 @@ async def _get(path: str, params: dict | None = None, cache_ttl: float = 0) -> A
         except Exception as exc:  # noqa: BLE001 - failover needs broad catch
             primary_err = exc
             _mark_host_down(BINANCE_FAPI)
+
+    # 1b) Same official host via the system proxy (VPN) — no-op when no
+    #     proxy is configured (ProxyUnavailable -> None instantly).
+    if data is None:
+        data = await _fapi_via_proxy(path, params)
 
     # 2) Mirror fallback for market-data paths only.
     if data is None:
@@ -210,8 +279,12 @@ async def get_depth(symbol: str, limit: int = 100, allow_mirror: bool = True) ->
             data = await _fetch(f"{BINANCE_FAPI}/fapi/v1/depth", params, _PRIMARY_TIMEOUT)
             _mark_host_ok(BINANCE_FAPI)
             return data, "binance_perp"
-        except Exception:  # noqa: BLE001 - fall through to the mirror
+        except Exception:  # noqa: BLE001 - fall through to the proxy attempt
             _mark_host_down(BINANCE_FAPI)
+    # official perp book via the system proxy (VPN) before other sources
+    data = await _fapi_via_proxy("/fapi/v1/depth", params)
+    if data is not None:
+        return data, "binance_perp"
     if allow_mirror and not _host_down(BINANCE_SPOT_MIRROR):
         try:
             data = await _fetch(f"{BINANCE_SPOT_MIRROR}/api/v3/depth", params, _FALLBACK_TIMEOUT)
@@ -227,7 +300,7 @@ def host_status() -> dict:
     """Live cooldown state per host (for /api/sources diagnostics)."""
     out = {}
     now = time.monotonic()
-    for host in (BINANCE_FAPI, BINANCE_SPOT_MIRROR):
+    for host in (BINANCE_FAPI, BINANCE_SPOT_MIRROR, _FAPI_PROXY_KEY):
         until = _host_down_until.get(host, 0.0)
         out[host] = {
             "down": until > now,

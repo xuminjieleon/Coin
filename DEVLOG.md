@@ -4,6 +4,38 @@
 > 规范、API 契约与当前状态见 `AGENTS.md`——会话开始先读那个；本文件按需查阅（需要了解某功能"为什么这样做"、回测依据、踩坑记录时再来读）。
 > 约定：每次推进后在本文件**顶部**追加新条目（最新在前）。
 
+## 2026-08-27（第十六轮）VPN 系统代理接入数据源链（fapi/Yahoo 复活）
+
+- **背景**：用户连上 VPN 后要求重测。实测发现 VPN 是**系统代理模式**（注册表 ProxyEnable=1 + ProxyServer=127.0.0.1:13059，非 TUN 全局接管）——浏览器走代理，但 curl/python 直连不走（出口仍是电信 2408: 直连、fapi 仍解析到污染 IP 65.49.68.152/2001::）。**显式走代理（curl -x / httpx proxy=）后 fapi 全端点（含此前无镜像可用的 premiumIndex/futures/data）+ Yahoo query1/2 全部 200**（出口 IP 104.234.240.117）。
+- **决策**：用户选择"两者都接"——币安链与宏观链都利用系统代理。设计原则：**代理是优先级链中的一环而非全局开关**，VPN 关闭时零配置自动回退既有降级链（镜像/Gate.io）。
+- **实现**：
+  - 新增 `services/sysproxy.py`：运行时读注册表探测系统代理（60s TTL 缓存；支持 host:port / http:// / 按协议分号格式，socks-only 配置如实返回 None——需 socksio 不支持）；传输失败（代理不可达/僵死连接）`mark_down` 300s 快速失败（与主机冷却一致）；共享代理连接池带第十五轮同款 keepalive_expiry+僵死换池重试；`ProxyUnavailable` 异常区分"没有代理/代理坏了"与"代理工作但目标返回状态码"（后者不标记代理坏——如 VPN 出口被币安区域封锁）
+  - `binance.py`：优先级链插入"同主机经系统代理"环节——`_get`（K线/exchangeInfo/ticker24h/premiumIndex/futures/data 全走它）与 `get_depth`（订单簿）均为 直连 fapi → fapi 经代理 → 镜像/其他源；代理环节用独立冷却键 `fapi|sysproxy`（直连失败不阻塞代理尝试、代理失败不阻塞直连重试）；`host_status()` 增列代理环节
+  - `macro.py`：`_yahoo_chart` 路由计划=直连双主机→代理双主机；直连 403 且无代理=立即 `_YahooBlocked`（保持第十五轮快速失败）；**全路由封锁（直连 403+代理不可用/403）→ 15 分钟 `_blocked_until` 快速失败窗**，防止 7 序列×2 备用符号每序列重复撞墙把 /api/macro 拖到分钟级（踩坑预防：闭包里给模块级 `_blocked_until` 赋值必须 `global` 声明，否则静默写进局部变量）
+  - `routers/sources.py`：链序描述更新（各链插入"·系统代理"环节）+ `systemProxy{url,down,retryInS}` 状态字段；`main.py` shutdown 钩子增 `sysproxy.close_client()`
+- **验证**（重启后端 PID 12524，全端点 200）：
+  | 端点 | 结果 |
+  |---|---|
+  | derivatives | **source=binance（经代理）**——真实币安 OI $8.34B（Gate 口径仅 $4.57B）、funding 3.6e-05、taker 1.24、historyStats 1002 天分位、Gate options（658 张/maxPain 77000）并存 |
+  | orderbook | **source=binance_perp（经代理）**，spreadBps 0.01 |
+  | macro | **解冻**——7 序列经代理续更至 08-26/27（冻结了 3 天），首刷 33.2s（每序列直连 403×2+代理 200），二次调用 0.1s（缓存） |
+  | analysis / klines / backtest / liquidations / onchain / symbols | 全部 200 正常 |
+- **诚实口径**：①`topTraderRatio` 在 source=binance 时为 null——Gate 独有字段（top_lsr_size），路由原设计即"仅 Gate 回退时填充"，08-24 fapi 可达的正常年代同样如此，非本轮回归；②经代理的流量走 VPN 出口（104.234.240.117），延迟 ~1.2s/请求且依赖 VPN 稳定性——代理失败 300s 冷却自动回退镜像/Gate；③Yahoo 代理路由下每日首次刷新 ~33s（7 序列×限速 1.6s 间隔），之后当日缓存。
+- **无策略参数改动**；优化不重开。
+
+## 2026-08-27（第十五轮）网络复查：fapi DNS 污染 + Yahoo 403 + 长跑进程连接池僵死（加固+重启）
+
+- **背景**：用户要求确认当前网络下数据接口是否仍正常（对照 AGENTS §6/§5 的既有实测记录）。
+- **网络实测（与 08-25 记录的差异）**：
+  - ❌ **fapi.binance.com 被 DNS 污染**——Resolve-DnsName/getaddrinfo 返回假 IP 轮换（104.244.43.231[Twitter 段]/69.63.186.30[Facebook 段]/2001::…），TCP 全部超时（08-24 时还可达）。与 npm registry 被企业 DNS 劫持同一手法：DNS 层污染、IP 层未封
+  - ✅ data-api.binance.vision、api.gateio.ws（tickers/funding_rate/contract_stats/options/contracts/order_book 全端点）、mempool.space、api.blockchain.info 全部 200
+  - ⚠️ **Yahoo query1/2 一律 403**（curl 与后端同款 httpx+浏览器 UA 双通道、加 cookie jar 均拒）——macro.db 七个序列全部停在 2026-08-24，即 08-25 起 Yahoo 已不可用（此前靠旧进程 30min 内存缓存 + <2 天不重拉的 SQLite 判定掩盖）
+- **顺带发现并修复——长跑后端进程连接池僵死**：8000 端口后端（08-25 23:20 启动，跑 1.5 天）进程内对镜像/Gate 的请求**全部失败**（analysis 502 "Binance hosts unreachable (cooldown)"、derivatives/orderbook 快照字段全空），而同机新进程 httpx 直测全部 200——是**进程状态问题而非网络问题**（liquidations/onchain/macro 正常是因为它们各自独立建 client/读本地库）。用 8001 临时实例验证降级链本身工作正常（orderbook→gateio_perp、derivatives→gateio、analysis 200）。
+- **加固（binance.py/gateio.py）**：①共享 client 改 `httpx.Limits(keepalive_expiry=60)` 主动剔除闲置连接——**坑：httpx 0.28.1 已删除 transport/AsyncClient 的 keepalive_expiry 参数，只能经 Limits 传**；②`_fetch/_get` 传输错误时（ConnectTimeout 除外——从未连上=真不可达，不是僵死连接）用一次性新 client 重试一次，成功则 `_swap_client` 换池。第十二轮"勿改回每请求新建 client"的约定仍然成立——错误路径的一次性重建是防御逻辑。
+- **macro.py 403 快速失败**：403 是封锁不是限流，原 429 重试协议在新网络下每序列空转 ~15-35s（冷启动宏观接口 >2min 客户端超时）；新增 `_YahooBlocked` 直接抛出不重试，宏观接口 12.2s 返回冻结在 08-24 的缓存序列（诚实降级，网络恢复自动续更）。
+- **重启与验证**：杀旧进程（venv launcher 父子两个 PID 都杀）→ `Start-Process python main.py` 后台启动（日志 `backend/data/uvicorn-8000.log`）→ 全端点验证 200：health / analysis（score 52 bullish plan long，与重启前新进程结果一致）/ derivatives（gateio：funding/OI $4.57B/topTrader/atmIv 全有）/ orderbook（gateio_perp）/ liquidations / onchain / macro（7 序列）；`/api/sources` 显示 fapi 冷却中（符合预期：每 300s 探测、4s 快速失败）、vision 正常。
+- **遗留（诚实口径）**：币安合约独有端点（premiumIndex、futures/data 系列）在 fapi 污染期间无镜像可用，衍生品数据由 Gate.io contract_stats 等价覆盖（实测字段无缺）；宏观冻结在 08-24 直至 Yahoo 恢复或换源（stooq 已下线、无其他免费可达源）；DNS 污染随运营商策略随时可能变化，一切以运行时探测为准。无策略参数改动。
+
 ## 2026-08-26（第十四轮）用户 Pine 脚本 vs 生产策略对比回测（用户问答）
 
 - **背景**：用户提供三个 TradingView Pine v6 脚本（`C:\Users\Administrator\Downloads\pine\{btc,eth,sol}1h.txt`，KC 通道突破 + EMA 趋势过滤 + ADX 区间 + RSI + 量能确认入场，三段式 ATR 止损），要求并发简单回测并与当前生产策略比较优劣。

@@ -7,6 +7,11 @@ query1/query2 host rotation). Daily bars are cached forever in SQLite
 
 Engine: daily-return Pearson correlations (30/60/90d) and 60d beta of BTC
 vs each series, aligned by UTC date against local kline_cache BTC 1d bars.
+2026-08-27: this network now gets 403 from both query hosts (blocked, not
+rate-limited) — stale series fast-fail instead of retry-storming and keep
+serving the last cached day. When a Windows system proxy is configured
+(VPN), the proxied route is tried after the direct one and typically
+un-blocks Yahoo; a hard block on every route arms a 15-min fast-fail window.
 """
 from __future__ import annotations
 
@@ -20,7 +25,7 @@ from pathlib import Path
 import httpx
 import pandas as pd
 
-from services import kline_cache
+from services import kline_cache, sysproxy
 
 DB_PATH = Path(__file__).resolve().parents[1] / "data" / "cache" / "macro.db"
 
@@ -39,6 +44,10 @@ _UA = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.
                      "(KHTML, like Gecko) Chrome/126.0 Safari/537.36",
        "Accept": "application/json,text/plain,*/*"}
 _MIN_SPACING = 1.6  # seconds between yahoo requests
+
+
+class _YahooBlocked(Exception):
+    """403 from Yahoo: the network/exit IP is blocked — retrying is futile."""
 _response_cache: dict | None = None
 _response_cache_at = 0.0
 _response_ttl = 1800.0
@@ -91,27 +100,77 @@ def _upsert(key: str, points: list[tuple[str, float]]) -> None:
         _db().commit()
 
 
+# when every route (direct + proxied) is hard-blocked (403), skip network
+# attempts for this window so the remaining series keys fail fast
+_BLOCKED_WINDOW = 900.0
+_blocked_until = 0.0
+
+
 async def _yahoo_chart(symbol: str, range_: str = "1y") -> list[tuple[str, float]]:
-    """Daily bars [(date, close)...]; raises on final failure."""
-    global _last_request
+    """Daily bars [(date, close)...]; raises on final failure.
+
+    Route plan: direct hosts first, then the same hosts through the Windows
+    system proxy when one is configured (VPN — this network's direct route
+    has been 403-blocked since 2026-08-27 but works via proxy). A 403 on the
+    last available route (or direct-403 + unusable proxy) raises
+    _YahooBlocked and arms the _BLOCKED_WINDOW fast-fail for other keys.
+    """
+    global _last_request, _blocked_until
+    if time.monotonic() < _blocked_until:
+        raise _YahooBlocked("yahoo recently blocked on all routes")
     hosts = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+    proxy = sysproxy.proxy_url()
+    routes: list[tuple[str, str | None]] = [(h, None) for h in hosts]
+    if proxy:
+        routes += [(h, "proxy") for h in hosts]
+    direct_403 = False
+
+    def _blocked(reason: str) -> _YahooBlocked:
+        global _blocked_until
+        _blocked_until = time.monotonic() + _BLOCKED_WINDOW
+        return _YahooBlocked(reason)
+
     last_exc: Exception | None = None
-    for attempt in range(3):
-        for host in hosts:
+    for attempt in range(2 if proxy else 3):
+        for host, via in routes:
+            url = (f"https://{host}/v8/finance/chart/{symbol}"
+                   f"?interval=1d&range={range_}")
             async with _http_lock:
                 wait = _MIN_SPACING - (time.monotonic() - _last_request)
                 if wait > 0:
                     await asyncio.sleep(wait)
                 _last_request = time.monotonic()
+                resp = None
                 try:
-                    async with httpx.AsyncClient(timeout=httpx.Timeout(12.0)) as client:
-                        resp = await client.get(
-                            f"https://{host}/v8/finance/chart/{symbol}"
-                            f"?interval=1d&range={range_}", headers=_UA)
-                        if resp.status_code == 429:
-                            raise RuntimeError("yahoo 429")
-                        resp.raise_for_status()
-                        data = resp.json()
+                    if via is None:
+                        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0)) as client:
+                            resp = await client.get(url, headers=_UA)
+                    else:
+                        resp = await sysproxy.request(url, headers=_UA, timeout=12.0)
+                except sysproxy.ProxyUnavailable as exc:
+                    if direct_403:
+                        # direct hard-blocked AND proxy unusable: all dead
+                        raise _blocked(f"yahoo direct 403, proxy unusable ({exc})")
+                    last_exc = exc
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    last_exc = exc
+                    continue
+                if resp.status_code == 403:
+                    if via is None:
+                        direct_403 = True
+                        if not proxy:
+                            raise _blocked("yahoo 403")
+                        continue  # proxied routes may still work
+                    if (host, via) == routes[-1]:
+                        raise _blocked("yahoo 403 (all routes)")
+                    continue
+                if resp.status_code == 429:
+                    last_exc = RuntimeError("yahoo 429")
+                    continue
+                try:
+                    resp.raise_for_status()
+                    data = resp.json()
                 except Exception as exc:  # noqa: BLE001
                     last_exc = exc
                     continue

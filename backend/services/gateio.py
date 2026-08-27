@@ -13,15 +13,35 @@ import httpx
 GATE_API = "https://api.gateio.ws"
 _TIMEOUT = httpx.Timeout(8.0)
 
-# Shared keep-alive client (connection pooling across requests; see binance.py)
+# Shared keep-alive client (connection pooling across requests; see binance.py).
+# keepalive_expiry + stale-pool retry rationale: binance.py 2026-08-27 note.
+_POOL_KEEPALIVE = 60.0
 _client: httpx.AsyncClient | None = None
+
+
+def _new_pool() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        timeout=_TIMEOUT,
+        limits=httpx.Limits(keepalive_expiry=_POOL_KEEPALIVE),
+    )
 
 
 def _shared_client() -> httpx.AsyncClient:
     global _client
     if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=_TIMEOUT)
+        _client = _new_pool()
     return _client
+
+
+async def _swap_client(fresh: httpx.AsyncClient) -> None:
+    """Adopt `fresh` as the shared pool, closing the previous one."""
+    global _client
+    old, _client = _client, fresh
+    if old is not None and not old.is_closed:
+        try:
+            await old.aclose()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def close_client() -> None:
@@ -43,7 +63,20 @@ def to_gate_symbol(symbol: str) -> str:
 
 
 async def _get(path: str, params: dict | None = None):
-    resp = await _shared_client().get(f"{GATE_API}{path}", params=params)
+    try:
+        resp = await _shared_client().get(f"{GATE_API}{path}", params=params)
+    except httpx.ConnectTimeout:
+        raise  # never connected — host genuinely unreachable, not a stale pool
+    except httpx.TransportError:
+        # Stale pooled socket: retry once on a brand-new connection and adopt
+        # it on success (see binance.py _fetch for the rationale).
+        fresh = _new_pool()
+        try:
+            resp = await fresh.get(f"{GATE_API}{path}", params=params)
+        except Exception:  # noqa: BLE001
+            await fresh.aclose()
+            raise
+        await _swap_client(fresh)
     resp.raise_for_status()
     return resp.json()
 

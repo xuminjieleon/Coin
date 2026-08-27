@@ -61,8 +61,8 @@
 - `GET /api/orderbook?symbol` → `{symbol, source('binance_perp'|'gateio_perp'|'binance_spot'), mid, bestBid, bestAsk, spreadBps, topImbalance(前20档失衡-1~1), bands[{bandPct(0.1/0.25/0.5/1), bidUsd, askUsd, imbalance}], walls[{side,price,usd,distBps}](单档>同带中位5倍), levels, note}`——优先级链：币安官方合约 depth → Gate.io 合约聚合盘（quanto乘数换算USD）→ 币安现货镜像 depth（标注"现货盘"）；60s 内存缓存；快照口径
 - `GET /api/liquidations?symbol` → `{long24hUsd, short24hUsd, total24hUsd, longShortRatio, percentileVsYear, history[{time,longUsd,shortUsd}]×48h, estimated[{leverage(10/25/50/100), longLiq, shortLiq}], price, source('gateio'|null), note}`——数据源为 Gate.io contract_stats 的 long/short_liq_usd 聚合（唯一免费源；真实逐笔 feed 需签名不可用）；Gate 不可达时多空清算如实置 null，估算强平位仍可用（=现价×(1∓1/lev) 隔离近似）；依赖 derivs_store 回填
 - `GET /api/onchain` → `{btc{hashrate, hashrateChg30d, mempoolTxs, mempoolVsize, fees{fastest,halfHour,hour,economy}, difficulty{progressPct,difficultyChangePct,remainingBlocks}, activeAddresses, activeAddrAvg30d}, sources[], unavailable, updatedAt}`——mempool.space + blockchain.info charts；10min 内存缓存；交易所净流入/稳定币流向付费源不可达，如实置空
-- `GET /api/macro` → `{series[{key(ndx/dxy/gold/vix/tnx/mstr/coin), name, last, chg1d/7d/30d, spark[45]}], correlations[{corr30/60/90, beta60}]（与 BTC 日收益 Pearson）, btc{last}, updatedAt, source}`——Yahoo chart API（**必须带浏览器 UA，否则 429**；全局 asyncio 锁 + ≥1.6s 间隔 + query1/query2 轮换 + 3 次退避重试）；日线入 SQLite macro.db（不可变，仅尾部重拉）；响应 30min 内存缓存
-- `GET /api/sources` → `{chains{数据类型→{order[],note}}, hostStatus{币安两主机:{down,retryInS}}, note}`——数据源优先级链配置与实时冷却状态诊断
+- `GET /api/macro` → `{series[{key(ndx/dxy/gold/vix/tnx/mstr/coin), name, last, chg1d/7d/30d, spark[45]}], correlations[{corr30/60/90, beta60}]（与 BTC 日收益 Pearson）, btc{last}, updatedAt, source}`——Yahoo chart API（**必须带浏览器 UA，否则 429**；全局 asyncio 锁 + ≥1.6s 间隔 + query1/query2 轮换 + 3 次退避重试；**403=封锁非限流，`_YahooBlocked` 快速失败不重试**——2026-08-27 起本网络直连 403，路由计划=直连双主机→系统代理双主机（VPN），全路由 403 进 15 分钟封锁窗并服务本地 SQLite 最后缓存日）；日线入 SQLite macro.db（不可变，仅尾部重拉）；响应 30min 内存缓存
+- `GET /api/sources` → `{chains{数据类型→{order[],note}}, hostStatus{币安两主机+fapi|sysproxy 代理环节:{down,retryInS}}, systemProxy{url,down,retryInS}, note}`——数据源优先级链配置与实时冷却状态诊断（含 Windows 系统代理探测状态）
 - `GET /api/scan?interval&top(10~80,默认40)` → `{interval, scanned, rows[{symbol,last,chg24h,quoteVolume,score,bias,regime,cvdDiv,hasPlan,topReason}], updatedAt, durationMs, note}`——24h ticker（币安官方合约→现货镜像）按成交额排序（剔除稳定币/杠杆币/UP-DOWN），每标的 200 根走 kline_cache 跑完整引擎评分（并发 6）；(interval,top) 结果 5min 缓存
 - `GET/POST/DELETE /api/journal/trades[,/{id},/{id}/close]` → SQLite journal.db：`POST /trades`（快照 plan 可选，冻结开仓时几何）、`POST /trades/{id}/close {exit, reason}`（**平仓时用本地 K 线确定性重放计划**：止损→+beR减半保本→跟踪/目标→时间退出，同根 K 线保守盘口顺序=止损先判；planExit vs 实际 → adherence followed/deviated：同因或 ±0.5R 内=followed）、`GET /stats`（胜率/非亏损率/合计R/遵循率/分币种分周期；**盈利泄漏分析**：`byExitReason{reason:{count,sumR,avgR,winRate}}` 按离场原因拆解盈亏来源，`adherenceEv{followed,deviated:{count,sumR,avgR}}` 遵循 vs 偏离的均值差=偏离计划的 R 成本/笔——执行层优势是否兑现的直接度量）
 - `POST /api/portfolio/advise`：body `{positions[...]≤20, accountEquity?}` → `{positions[{price,notionalUsd,riskUsd,liqPrice,unrealizedPct,unrealizedR,barsHeld,attention{level(danger|warn|info|ok),text}}], netUsd, grossUsd, marginUsd, totalRiskUsd, riskPctOfEquity, correlatedPairs(|corr|≥0.7), betas(vs BTC), items[]}`——组合层风控：净/总敞口、集中度>50%警告、两两相关性（本地 1d 90 日）、风险预算占权益 >3%warn/>6%danger；**每仓位 attention 分诊**（danger：无止损/止损越强平价/超时间退出窗口；warn：浮亏 ≤-1R 或逆势 |评分|≥25；info：评分轻度反向；ok：顺势）——评分走扫描器口径（200 根，无 MTF/衍生品上下文），items 汇总"N 个仓位需立即处理"；跨仓位不漏管退出纪律
@@ -75,6 +75,8 @@
 - **后端**：SMC 决策引擎（swings→smc→indicators→volume→decision，regime 分化权重+MTF 共振+CVD 多周期共振+funding/OI 加权+Wyckoff+波动率状态）、K 线本地缓存、衍生品持久化与分位、订单簿微观结构、清算聚合、链上、宏观联动、全市场扫描、交易日记（计划重放+遵循率）、组合风控、仓位建议（决策卡同口径+回放+事件+证据状态+止盈阶梯+action）、K 线点击回放（asOf）。SMC 单测通过；各端点实测 200、校验 400 正常
 - **前端**：全部面板就绪（DecisionCard/TradePlanCard/DerivativesPanel/VolumeProfilePanel/MacroPanel/OnchainPanel/OrderBookPanel/LiquidationPanel/CalendarPanel/PortfolioPanel/PositionPanel/JournalPanel/ScannerModal/MtfBar/SourceHint）；**移动端响应式适配已上线**（App.css 断点见 §3 布局；宏观表格改为 4 列两行自适应，修复了桌面端 360px 侧栏下走势列被裁切的历史问题）；`npm.cmd run build` tsc 零错误
 - **加载性能（2026-08-25 第十二轮）**：后端 binance/gateio 共享 AsyncClient 连接池（勿在 `_fetch/_get` 里改回每次新建 client）；derivatives 5 个币安调用/Gate.io 两路/analysis 衍生品上下文均为 asyncio 并行；`ensure_backfill` 走后台任务（强引用防 GC）；前端各面板与 analysis 并行刷新。整页 ~15s→~2.4s（热 0.5s）。CPU 非瓶颈（full_analysis 500 根 13ms），勿用多进程处理请求路径
+- **连接池加固（2026-08-27 第十五轮）**：共享 client 经 `httpx.Limits(keepalive_expiry=60)` 剔除闲置连接（**坑：httpx 0.28 已移除 transport 的 keepalive_expiry 参数，只能走 Limits**）；`_fetch/_get` 遇传输错误（ConnectTimeout 除外——从未连上=真不可达，非僵死连接）用一次性新 client 重试一次、成功则 `_swap_client` 换池——防御长跑进程连接池僵死（08-25 启动的进程跑 1.5 天后对可达主机全部请求失败的事故，重启+此加固解决）；勿改回每请求新建 client，错误路径的一次性重建是防御逻辑
+- **系统代理（VPN）接入数据源链（2026-08-27 第十六轮）**：新增 `services/sysproxy.py`——运行时读注册表探测 Windows 系统代理（60s TTL；VPN 客户端通常以系统代理模式工作，httpx 不读 WinINET 设置只认环境变量），传输失败 300s 冷却快速失败，共享代理连接池带同样的 keepalive 僵死防御；**币安链插入"同主机经系统代理"环节**（binance.py `_get`/`get_depth`，独立冷却键 `fapi|sysproxy`——直连失败不阻塞代理尝试、反之亦然），**宏观 Yahoo 路由计划=直连双主机→代理双主机**（403 快速失败保留；直连 403+代理不可用=全路由封锁→15 分钟快速失败窗防每个序列重复撞墙）。代理是**链中一环非全局开关**：VPN 关闭自动回退既有降级链（镜像/Gate），零配置切换。`/api/sources` 新增 `systemProxy` 状态与各链代理环节描述
 - **盈利扩展三杠杆已接线（2026-08-25）**：①**机会捕捉**——预警铃铛开启时每次刷新后台拉 `/api/scan`（服务端 5min 缓存）喂计划观察器：市场级**新计划/计划转向**推送（首个周期静默播种防风暴、每标的 30min 冷却、toast 点击切标的）+ 当前标的**回踩接近计划入场区**（≤0.3×ATR）与**挂单窗口到期**提醒（key=symbol|interval|direction，entry 随 ATR 漂移原地更新不重置计时，到期每窗口提醒一次）；②**组合分诊**——PortfolioPanel 每仓位 attention chip（紧急/注意/偏逆）按严重度排序置顶；③**遵循率成本**——JournalPanel 显示遵循 vs 偏离的均值差（偏离成本 R/笔）+ 按离场原因的盈亏拆解
 - 仓位按 symbol 持久化 localStorage `coinlens.position`，数据刷新时自动重新分析
 - **LTC 纯样本外回测（2026-08-25 第六轮，DEVLOG）**：`tests/backtest_ltc.py` 复用第 11 轮 harness 跑生产配置（LTC 从未参与调参）——1h +116.6R(98.7%)/4h +150.4R(87.0%, EV+0.301R)/1d +24.5R(86.5%)/1w +1.1R(19 笔小样本)；方向准确率 <50% 而利润为正，执行层优势在第四个标的上复现；未改任何生产参数
@@ -87,6 +89,7 @@
 - 1w 盲测样本不足（105 笔/四币 5 年）是已声明局限；回测未计手续费/滑点（净 EV 再减 0.03~0.06R）
 - 清算数据是 Gate.io 统计口径而非逐笔 feed；订单簿是快照而非流；估算强平位未计维持保证金；链上实体标签数据不可达——均如实标注，不编造
 - 事件日历为本地手动维护（backend/data/events.json）
+- **宏观源 Yahoo 2026-08-27 起直连 403**（curl/httpx 双通道、带 UA 均拒；VPN 系统代理下可达）：无 VPN 时宏观序列冻结在最后缓存日、macro.py 403 快速失败（15 分钟封锁窗），VPN 开启时自动经代理续更；策略评分不含宏观数据，不受影响
 - **策略优化已终止**（第 11b 轮结论固化；第 13 轮为 §7.3 新数据条款下的唯一一次重开并已再次冻结，见 §7 维护规则）
 
 ### 运行环境
@@ -97,7 +100,9 @@
 - Vite dev 绑定 IPv6 localhost（127.0.0.1 连不上时用 http://localhost:5173）
 
 **D:\Work\Coin（企业网机器）**：
-- **启动后端前先查 8000 端口占用**（`netstat -ano | findstr :8000`）：曾发生旧会话进程残留、新进程未抢到端口、UI 全天由旧几何服务的事故（2026-08-25 第十一轮踩坑）
+- **启动后端前先查 8000 端口占用**（`netstat -ano | findstr :8000`）：曾发生旧会话进程残留、新进程未抢到端口、UI 全天由旧几何服务的事故（2026-08-25 第十一轮踩坑）。后台方式启动：`Start-Process -FilePath "D:\Work\Coin\backend\.venv\Scripts\python.exe" -ArgumentList "main.py" -WorkingDirectory "D:\Work\Coin\backend" -WindowStyle Hidden -RedirectStandardError "D:\Work\Coin\backend\data\uvicorn-8000.log"`（注意 venv launcher 会带一个同名子进程，杀进程时父子都杀）
+- **网络实测（2026-08-27，会随运营商策略变化，一切以运行时探测为准）**：fapi.binance.com **被 DNS 污染**（解析到假 IP 轮换：104.244.43.231/69.63.186.30/2001::…，TCP 超时；08-24 时还可达）——K线/订单簿/衍生品/ticker 自动降级镜像+Gate.io，实测降级链全通（orderbook→gateio_perp、derivatives→gateio、analysis 走镜像 K线）；data-api.binance.vision / api.gateio.ws（全端点）/ mempool.space / api.blockchain.info 均 ✅；Yahoo query1/2 一律 403（宏观冻结，见已知局限）。币安合约独有端点（premiumIndex、futures/data 系列）污染期间无镜像，衍生品数据由 Gate contract_stats 等价覆盖、无实质缺失
+- **VPN（系统代理模式）实测（2026-08-27）**：用户 VPN 客户端以系统代理工作（注册表 ProxyEnable=1 + ProxyServer=127.0.0.1:13059，非 TUN 全局接管——curl/python 直连不走它，需显式 -x/代码支持）。经代理：**fapi 全端点（含 premiumIndex/futures/data）+ Yahoo 全部 200**（出口 IP 104.234.240.117）。后端已按第十六轮改造自动探测并利用系统代理：VPN 开启时 derivatives 恢复 binance 主源（真实 OI ~$8.3B vs Gate ~$4.6B）、宏观自动续更；VPN 关闭自动回退降级链，无需任何配置
 - **外网访问拓扑（2026-08-25 实测）**：本机 → TL-WDR5620(192.168.0.1) → 电信"超级家庭网关"光猫(192.168.1.1，光猫路由模式) → 运营商 CGNAT（tracert 第 3 跳 10.220.224.1 私网段）——**IPv4 端口转发不可行**（宽带线路无公网 v4，除非找 ISP 申请）；**已验证可行的外网路径是 Cloudflare Tunnel**（`tools\cloudflared.exe tunnel --url http://localhost:5173 --protocol http2 --no-autoupdate`，免账号 quick tunnel，手机任意网络访问 `https://xxx.trycloudflare.com`；注意 URL 每次重启随机变化、无 SLA、公开可访问勿外传；`vite.config.ts` 已配 `allowedHosts: ['.trycloudflare.com']`——Vite 6 默认校验 Host 头，不加会被 403）；备选公网 IPv6 直连（2408: 前缀、防火墙 "CoinLens Web 5173 Public" 已放行、仅限手机有 IPv6 的场景，前缀随重拨变化）。本机出网走 Zscaler 代理（曼谷出口），ipify 等查到的是代理 IP 而非线路真实 IP
 - node/npm 不在系统 PATH，Node v22.14.0 位于 `D:\360se6\Application\components\Node\`（含 npm.cmd）；运行前端命令前先 `$env:Path = "D:\360se6\Application\components\Node;$env:Path"`
 - Python 用 `py -3.13`；backend/.venv 已重建并装好依赖
@@ -113,14 +118,14 @@
 
 | 数据类型 | 优先级链（运行时探测） | 降级行为 |
 |---|---|---|
-| K线/exchangeInfo | 币安官方合约 fapi → 现货镜像 data-api.binance.vision | 逐类缓存命中率 |
-| 订单簿 | 币安官方合约 depth → Gate.io 合约聚合盘 → 币安现货镜像 depth | 最后档标注"现货盘，杠杆盘口可能不同" |
-| 衍生品快照 | 币安官方合约统计 → Gate.io futures+contract_stats | 字段级 null |
+| K线/exchangeInfo | 币安官方合约 fapi（直连→系统代理）→ 现货镜像 data-api.binance.vision | 逐类缓存命中率 |
+| 订单簿 | 币安官方合约 depth（直连→系统代理）→ Gate.io 合约聚合盘 → 币安现货镜像 depth | 最后档标注"现货盘，杠杆盘口可能不同" |
+| 衍生品快照 | 币安官方合约统计（直连→系统代理）→ Gate.io futures+contract_stats | 字段级 null |
 | 衍生品历史/分位数 | Gate.io contract_stats（含清算USD）→ 币安 futures/data（OI/费率/多空比，无清算） | derivs.db 多源按列 UPSERT 合并 |
 | 清算聚合 | Gate.io contract_stats（唯一免费源） | 多空清算置空（不编造），杠杆强平位仍可用（只需价格） |
-| 全市场扫描 ticker | 币安官方合约 24hr → 现货镜像 24hr | — |
+| 全市场扫描 ticker | 币安官方合约 24hr（直连→系统代理）→ 现货镜像 24hr | — |
 | 链上 | mempool.space + blockchain.info（互补） | 字段级降级 |
-| 宏观日线 | Yahoo chart API（唯一可用源） | 序列置空 |
+| 宏观日线 | Yahoo chart API（直连→系统代理） | 序列冻结在最后缓存日 |
 
 **C:\dev\Coin 本机（Zscaler 企业网，2026-08-24 实测，仅作参考非结论）：**
 - fapi/api.binance.com：曾长期 451（区域封锁），2026-08-24 复测可达——数据源会随时间变化，以运行时探测为准
