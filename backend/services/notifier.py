@@ -8,7 +8,9 @@ Design (agreed with the user, 2026-08-27):
 - mode "events" (default): push only on new plan / direction flip / plan
   gone, one aggregated message. First cycle after (re)seed is silent.
 - mode "brief": one message per hour with every configured symbol's plan
-  snapshot (plan fields drift with ATR — each message is the latest plan).
+  snapshot in the same multi-line 【】 block format as events (idle symbols
+  listed compactly per interval; plan fields drift with ATR — each message
+  is the latest plan).
 - Multi-interval (2026-08-27): config "intervals" is a list (e.g.
   ["1h","4h"]); every hourly cycle analyses symbols x intervals
   concurrently. 4h plan state only changes when a 4h bar closes, so its
@@ -184,21 +186,37 @@ def _plan_lines(plan: dict) -> list[str]:
     return lines
 
 
-def _plan_oneline(plan: dict) -> str:
-    """Single line for one plan (brief mode)."""
-    long = plan["direction"] == "long"
-    parts = [
-        "做多" if long else "做空",
-        f"入场 {_fmt(plan['entry'])}",
-        f"止损 {_fmt(plan['stop'])}",
-    ]
-    if plan.get("target1") is not None:
-        parts.append(f"止盈 {_fmt(plan['target1'])}")
-    parts.append(f"{_fmt(plan['beTrigger'])} 减半保本")
-    dist = _trail_dist(plan)
-    if dist is not None:
-        parts.append(f"跟踪止损 {'最高−' if long else '最低+'}{_fmt(dist)}")
-    return "，".join(parts)
+def _plan_block(sym: str, itv: str, plan: dict) -> str:
+    """【sym itv direction】 header + concrete-price lines (one plan block)."""
+    head = f"【{sym} {itv} {'做多' if plan['direction'] == 'long' else '做空'}】"
+    return head + "\n" + "\n".join(_plan_lines(plan))
+
+
+def _brief_content(intervals: list[str], symbols: list[str],
+                   plans: dict, failed: set) -> str:
+    """brief mode content: full multi-line plan blocks (【】 headers,
+    ---------- separators — 2026-08-28 user preference, clearer than
+    one-liners) with a compact idle list per interval."""
+    multi = len(intervals) > 1
+    sections: list[str] = []
+    for itv in intervals:
+        blocks: list[str] = []
+        idle: list[str] = []
+        for sym in symbols:
+            if (sym, itv) in failed:
+                idle.append(f"{sym}：本轮分析失败")
+            elif plans.get((sym, itv)):
+                blocks.append(_plan_block(sym, itv, plans[(sym, itv)]))
+            else:
+                idle.append(f"{sym}：观望")
+        seg = "\n----------\n".join(blocks)
+        if idle:
+            idle_txt = "\n".join(idle)
+            seg = f"{seg}\n\n{idle_txt}" if seg else idle_txt
+        if multi:
+            seg = f"— {itv} —\n{seg}"
+        sections.append(seg)
+    return "\n\n".join(sections)
 
 
 def _now_label() -> str:
@@ -352,19 +370,7 @@ async def _run_once(allow_push: bool) -> None:
         content = "\n----------\n".join(blocks)
     else:  # brief
         title = f"CoinLens 每小时提示 {_now_label()}"
-        multi = len(intervals) > 1
-        lines = []
-        for itv in intervals:
-            if multi:
-                lines.append(f"— {itv} —")
-            for sym in symbols:
-                if (sym, itv) in failed:
-                    lines.append(f"{sym}：本轮分析失败")
-                elif plans[(sym, itv)]:
-                    lines.append(f"{sym}：{_plan_oneline(plans[(sym, itv)])}")
-                else:
-                    lines.append(f"{sym}：观望")
-        content = "\n".join(lines)
+        content = _brief_content(intervals, symbols, plans, failed)
 
     if not allow_push:
         return
