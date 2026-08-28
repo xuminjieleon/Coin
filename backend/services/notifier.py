@@ -22,6 +22,12 @@ Design (agreed with the user, 2026-08-27):
 - Fingerprint = "symbol|interval" -> direction (entry drift does NOT
   re-fire, same semantics as the frontend plan watcher in
   frontend/src/utils/alerts.ts).
+- Message prices need NO user-side math (2026-08-28): trail plans (4h/1d/1w)
+  print the trail DISTANCE in price units and the concrete stop right after
+  the half-off (journal replay semantics: stop = max(entry, MFE -
+  trailR*risk)) instead of the old "trail activation" price, which was below
+  the actual arming level on 4h/1d and required the user to compute
+  trailR x risk by hand.
 - Symbols whose analysis FAILED are excluded from fingerprint comparison
   (a network hiccup must not push a fake "plan gone").
 - Config + state persist to backend/data/notify.json (gitignored: token).
@@ -29,6 +35,7 @@ Design (agreed with the user, 2026-08-27):
 
 import asyncio
 import json
+import math
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -119,13 +126,18 @@ def _fmt(p: float) -> str:
         return f"{p:,.0f}"
     if p >= 1:
         return f"{p:,.2f}"
-    return f"{p:.6f}".rstrip("0").rstrip(".")
+    # <1: 4 significant digits, no exponent (prices and trail distances)
+    if p == 0:
+        return "0"
+    exp = math.floor(math.log10(abs(p)))
+    return f"{p:.{max(0, 3 - exp)}f}".rstrip("0").rstrip(".")
 
 
 def _trail_ref(plan: dict) -> float | None:
-    """Trail activation price (entry ± trailR x risk): once profit reaches
-    this price the trail arms (at breakeven) and then ratchets with MFE
-    (journal_store.replay_plan semantics)."""
+    """Legacy field: entry ± trailR x risk (kept in the status API's
+    planStates for compatibility; NOT printed in messages anymore — for
+    4h/1d the trail actually engages at the (higher) beTrigger, so this
+    price is not an actionable level)."""
     trail = plan.get("trailR")
     if trail is None or plan.get("target1") is not None:
         return None
@@ -136,8 +148,21 @@ def _trail_ref(plan: dict) -> float | None:
     return entry + trail * risk if plan["direction"] == "long" else entry - trail * risk
 
 
+def _trail_dist(plan: dict) -> float | None:
+    """Trail distance in PRICE units (trailR x risk) for trail plans."""
+    trail = plan.get("trailR")
+    if trail is None or plan.get("target1") is not None:
+        return None
+    risk = abs(plan["entry"] - plan["stop"])
+    if risk <= 0:
+        return None
+    return trail * risk
+
+
 def _plan_lines(plan: dict) -> list[str]:
-    """Multi-line block for one plan (events mode)."""
+    """Multi-line block for one plan (events mode). Trail semantics follow
+    journal_store.replay_plan: at beTrigger half exits and the stop becomes
+    max(entry, MFE - trailR*risk) — all printed as concrete prices."""
     long = plan["direction"] == "long"
     lines = [
         f"入场 {_fmt(plan['entry'])}（回踩限价）",
@@ -145,26 +170,34 @@ def _plan_lines(plan: dict) -> list[str]:
     ]
     if plan.get("target1") is not None:
         lines.append(f"止盈 {_fmt(plan['target1'])}")
-    ref = _trail_ref(plan)
-    if ref is not None:
-        lines.append(f"跟踪止盈启动 {_fmt(ref)}（盈利至此启动，此后随行情移动）")
-    lines.append(f"{_fmt(plan['beTrigger'])} 减半保本（此后止损提到入场价）")
+    dist = _trail_dist(plan)
+    if dist is None:
+        lines.append(f"{_fmt(plan['beTrigger'])} 减半保本（半仓止盈，此后止损提到入场价）")
+    else:
+        lines.append(f"{_fmt(plan['beTrigger'])} 减半保本（半仓止盈，此后启用跟踪止损）")
+        if long:
+            z = max(plan["entry"], plan["beTrigger"] - dist)
+            lines.append(f"跟踪止损 = 最高价−{_fmt(dist)}（半仓离场时止损设 {_fmt(z)}，只上移，不低于入场价）")
+        else:
+            z = min(plan["entry"], plan["beTrigger"] + dist)
+            lines.append(f"跟踪止损 = 最低价+{_fmt(dist)}（半仓离场时止损设 {_fmt(z)}，只下移，不高于入场价）")
     return lines
 
 
 def _plan_oneline(plan: dict) -> str:
     """Single line for one plan (brief mode)."""
+    long = plan["direction"] == "long"
     parts = [
-        "做多" if plan["direction"] == "long" else "做空",
+        "做多" if long else "做空",
         f"入场 {_fmt(plan['entry'])}",
         f"止损 {_fmt(plan['stop'])}",
     ]
     if plan.get("target1") is not None:
         parts.append(f"止盈 {_fmt(plan['target1'])}")
-    ref = _trail_ref(plan)
-    if ref is not None:
-        parts.append(f"跟踪止盈启动 {_fmt(ref)}")
     parts.append(f"{_fmt(plan['beTrigger'])} 减半保本")
+    dist = _trail_dist(plan)
+    if dist is not None:
+        parts.append(f"跟踪止损 {'最高−' if long else '最低+'}{_fmt(dist)}")
     return "，".join(parts)
 
 
@@ -211,6 +244,7 @@ def _plan_state(symbol: str, analysis: dict | None) -> dict | None:
         "target1": plan.get("target1"),
         "beTrigger": plan.get("beTrigger"),
         "trailRef": _trail_ref(plan),
+        "trailDist": _trail_dist(plan),
         "fillBars": plan.get("fillBars"),
         "score": summary.get("score"),
         "bias": summary.get("bias"),
