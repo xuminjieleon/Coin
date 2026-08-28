@@ -8,6 +8,7 @@
 
 - 用户拍板双机热备（一台网络故障时另一台继续推，代价=偶发重复消息）。本机（C:\dev\Coin）后端以后台进程启动（:8000）；`POST /api/notify` 配置企业微信通道（key 存 notify.json，gitignored）、enabled=true、intervals=["1h","4h"]、四币——与部署机同口径。下一整点+5 起 events 模式**首轮静默播种**，其后正常推送；两机指纹状态独立（各自 notify.json），配置变更需两台同步改。
 - 应用户要求立即发送一条当前 1h/4h 计划快照（临时脚本走 notifier 同一通道与 brief 格式，已删）：1h=BTC 做空（79,911 入），4h=四币全做多——与第二十六轮回放一致（BTC 1h 空 vs 4h 多并存属周期冲突，各周期各做各的）。
+- **用户决定：企业微信配置随仓库提交**（`.gitignore` 移除 notify.json；repo 为私有，key 即该群机器人 webhook）。提交的 notify.json 为干净引导态（enabled/wecom/四币/1h+4h/**seeded=false**——任何机器首次启动第一轮静默播种、第二轮起正常推送）。各机运行后本地状态（指纹/seeded）自行演化，**git pull 冲突时保留本地文件**。本机后台服务已停止——用户改在另一台机器运行（该机 git pull 后需处理本地未跟踪 notify.json 冲突：备份本地→pull→还原本地（同 key 且指纹更新鲜），或直接采用仓库版再静默重播种）。
 - 第 23~26 轮成果（fee_compare/direction_split/notify_replay_check/fill_check_recent + 文档同步）已提交并推送（6827f54）。零生产代码改动。
 
 

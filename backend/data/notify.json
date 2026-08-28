@@ -1,0 +1,19 @@
+{
+  "enabled": true,
+  "mode": "events",
+  "channel": "wecom",
+  "symbols": [
+    "BTCUSDT",
+    "ETHUSDT",
+    "SOLUSDT",
+    "BNBUSDT"
+  ],
+  "intervals": [
+    "1h",
+    "4h"
+  ],
+  "token": "",
+  "wecomKey": "c6034045-2131-4f23-9087-36c6385d4d75",
+  "seeded": false,
+  "seenPlans": {}
+}

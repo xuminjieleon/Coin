@@ -30,8 +30,8 @@ backend/data/*.log
 # K 线本地磁盘缓存（不可变历史数据，自动重建）
 backend/data/cache/
 
-# 微信推送配置与状态（含 pushplus token，勿提交）
-backend/data/notify.json
+# 微信推送配置（2026-08-28 用户决定随仓库提交：企业微信 key 作各机器引导配置；
+# 运行后各机本地状态[指纹/seeded]自行演化，拉取冲突时保留本地文件）
 
 # 本地环境
 *.log.tmp
