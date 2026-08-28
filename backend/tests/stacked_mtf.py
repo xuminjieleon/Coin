@@ -111,7 +111,9 @@ def compute_records(sym: str, tf: str, dfs: dict) -> list[dict]:
 
 def load_records(sym: str, tf: str, dfs: dict, refresh: bool) -> list[dict]:
     cache_file = os.path.join(ps.CACHE_DIR, f"_5y_cache_{sym}_{tf}.pkl")
-    key = {"ver": 1, "tf": tf, "symbol": sym, "src": ps.source_hash()}
+    # 键含 window，与 backtest_5y.load_records 一致（第二十九轮统一：旧键缺 window
+    # 导致整键比对不兼容、触发无谓全量重算）
+    key = {"ver": 1, "tf": tf, "symbol": sym, "window": W5[tf], "src": ps.source_hash()}
     if not refresh and os.path.exists(cache_file):
         try:
             with open(cache_file, "rb") as f:
