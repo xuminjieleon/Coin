@@ -6,7 +6,11 @@
     "BTCUSDT",
     "ETHUSDT",
     "SOLUSDT",
-    "BNBUSDT"
+    "BNBUSDT",
+    "XRPUSDT",
+    "ZECUSDT",
+    "DOGEUSDT",
+    "SUIUSDT"
   ],
   "intervals": [
     "1h",
