@@ -13,11 +13,22 @@ Design (agreed with the user, 2026-08-27):
   is the latest plan).
 - Multi-interval (2026-08-27): config "intervals" is a list (e.g.
   ["1h","4h"]); every hourly cycle analyses symbols x intervals
-  concurrently. 4h plan state only changes when a 4h bar closes, so its
-  events fire at most every 4 hours. Messages carry the interval tag
+  concurrently. Messages carry the interval tag
   (e.g. "【新】BTCUSDT 4h 做多"). Legacy single "interval" strings migrate
   to a one-element list (fingerprint reseeded — key shape changed from
   symbol to symbol|interval).
+- Closed-bar-only push semantics (2026-08-29, option B — user saw 4h
+  events firing at hourly checkpoints overnight and asked why; the old
+  docstring claim "4h events at most every 4h" was an assumption the code
+  never guaranteed): every cycle runs run_analysis in REPLAY mode with
+  as_of = open time of the newest CLOSED bar. Plan states therefore only
+  change when a bar closes — 4h events fire at most every 4 hours
+  (checkpoints right after UTC 00/04/08/12/16/20 closes), 1h decisions
+  drop the 5-minute forming tail, and the forming-bar intraday flicker
+  documented in DEVLOG rounds 24/26 can no longer push events. Push,
+  chart replay and journal replay now share ONE decision semantics. A
+  cycle whose returned last candle is not the requested as_of bar (data
+  gap) is treated as failed — the previous fingerprint stands.
 - Position management after entry is NOT pushed (user decision): the pushed
   plan is the pending-order signal; entry-time geometry freezes on fill,
   see journal_store.replay_plan / App position panel.
@@ -43,11 +54,21 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from services import notify
-from services.analysis.context import ALLOWED_INTERVALS, NoKlinesError, run_analysis
+from services.analysis.context import ALLOWED_INTERVALS, NoKlinesError, STEP_MS, run_analysis
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "notify.json"
 
 MODES = {"events", "brief"}
+
+_EPOCH_MONDAY_MS = 4 * 86_400_000  # weekly bars open Monday 00:00 UTC (epoch was a Thursday)
+
+
+def _last_closed_open(now_ms: int, interval: str) -> int:
+    """Open time of the newest bar that has already CLOSED at now_ms.
+    UTC-epoch aligned for 1h/4h/1d; weekly anchored to Monday."""
+    step = STEP_MS[interval]
+    anchor = _EPOCH_MONDAY_MS if interval == "1w" else 0
+    return (now_ms - anchor) // step * step + anchor - step
 
 DEFAULT_CFG = {
     "enabled": False,
@@ -237,9 +258,19 @@ async def _send(title: str, content: str) -> tuple[bool, str]:
 # ---------------------------------------------------------------- analysis
 
 async def _safe_analysis(symbol: str, interval: str) -> dict | None:
-    """run_analysis without exceptions; None = failed this round."""
+    """Closed-bar-only analysis (option B, 2026-08-29): replay semantics with
+    as_of = newest CLOSED bar's open time (kline_cache end_time is inclusive
+    and self-heals missing pages, so the just-closed bar is always fetched).
+    Guard: if the returned last candle is not the requested as_of bar (data
+    gap / partial fetch), treat this round as failed — the previous
+    fingerprint stands, never compare against stale data."""
     try:
-        return await run_analysis(symbol, interval, 500)
+        as_of = _last_closed_open(int(time.time() * 1000), interval)
+        analysis = await run_analysis(symbol, interval, 500, as_of=as_of)
+        candles = analysis.get("candles") or []
+        if not candles or int(candles[-1]["time"]) != as_of:
+            return None
+        return analysis
     except NoKlinesError:
         return None
     except Exception:
