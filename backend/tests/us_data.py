@@ -56,6 +56,13 @@ POOL = {
     "GLD": "黄金ETF",
     "TLT": "20年国债ETF",
     "EEM": "新兴市场ETF",
+    # round 38: crypto-related equities (user-requested pool)
+    "MSTR": "Strategy(BTC金库)",
+    "COIN": "Coinbase",
+    "MARA": "MARA Holdings(矿)",
+    "RIOT": "Riot Platforms(矿)",
+    "CLSK": "CleanSpark(矿)",
+    "HOOD": "Robinhood",
 }
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "us")

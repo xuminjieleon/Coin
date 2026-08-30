@@ -17,9 +17,14 @@ backend/tests/_ltc_cache_*.pkl
 backend/tests/_t10_cache_*.pkl
 backend/tests/_5y_cache_*.pkl
 backend/tests/_ashare_rec_*.pkl
+backend/tests/_us_rec_*.pkl
+backend/tests/_usc_rec_*.pkl
 
 # A股 ETF 东财/腾讯日线本地缓存（tests/ashare_data.py --refresh 可重建）
 backend/data/ashare/
+
+# 美股 Yahoo 日线/60m 本地缓存（tests/us_data.py --refresh 可重建）
+backend/data/us/
 
 # 回测运行日志（结论已固化进 AGENTS.md，可由工具重跑）
 backend/tests/*.log
