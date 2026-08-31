@@ -32,9 +32,14 @@ Design (agreed with the user, 2026-08-27):
 - Position management after entry is NOT pushed (user decision): the pushed
   plan is the pending-order signal; entry-time geometry freezes on fill,
   see journal_store.replay_plan / App position panel.
-- Fingerprint = "symbol|interval" -> direction (entry drift does NOT
-  re-fire, same semantics as the frontend plan watcher in
-  frontend/src/utils/alerts.ts).
+- Fingerprint = "symbol|interval" -> direction for NEW/GONE/FLIP events.
+  Separately, when the direction is UNCHANGED but the pending order's
+  entry/stop have drifted materially (ATR moves the retrace limit), an
+  "改单" (amend) event fires with the fresh prices — the user's resting
+  limit order still sits at the stale price otherwise (2026-08-31: BNB
+  4h filled at a drifted price the user never saw). Amend events carry the
+  full plan block so the user can re-place entry+stop. Drift is measured
+  against the last PUSHED prices (persisted), not the last analysis.
 - Message prices need NO user-side math (2026-08-28): trail plans (4h/1d/1w)
   print the trail DISTANCE in price units and the concrete stop right after
   the half-off (journal replay semantics: stop = max(entry, MFE -
@@ -80,7 +85,13 @@ DEFAULT_CFG = {
     "wecomKey": "",    # WeCom group robot webhook key
     "seeded": False,
     "seenPlans": {},
+    "pushedPlans": {},  # "symbol|interval" -> {"entry","stop","direction"} of last PUSHED plan
 }
+
+# Amend event fires when entry OR stop drifted by >= this fraction of the
+# order's own risk (entry-stop distance). Below this the amend noise is not
+# worth a push; at/above it the resting order is meaningfully stale.
+AMEND_DRIFT_FRAC = 0.20
 
 
 def _norm_intervals(raw) -> list[str]:
@@ -244,6 +255,32 @@ def _now_label() -> str:
     return datetime.now().strftime("%m-%d %H:%M")
 
 
+def _amend_event(key: str, plan: dict):
+    """Return an ("改单", ...) event tuple when the current plan's entry/stop
+    drifted materially from the last PUSHED resting order, else None.
+
+    Drift is measured in units of the order's own risk (entry-stop distance):
+    if entry OR stop moved by >= AMEND_DRIFT_FRAC x risk, the resting limit
+    order is stale enough to be worth an amend push. We compare against the
+    last PUSHED prices (persisted), not the previous analysis, so we don't
+    re-push every hour when nothing was acted on."""
+    pushed = (_cfg.get("pushedPlans") or {}).get(key)
+    if not pushed:
+        return None  # never pushed (e.g. seeded silently): nothing resting to amend
+    if pushed.get("direction") != plan.get("direction"):
+        return None  # direction flip is handled as its own event
+    risk = abs(plan["entry"] - plan["stop"])
+    if risk <= 0:
+        return None
+    old_risk = abs(pushed["entry"] - pushed["stop"])
+    base = max(risk, old_risk)
+    drift = max(abs(plan["entry"] - pushed["entry"]), abs(plan["stop"] - pushed["stop"]))
+    if base > 0 and drift / base >= AMEND_DRIFT_FRAC:
+        sym, itv = key.split("|", 1)
+        return ("改单", sym, itv, plan, pushed)
+    return None
+
+
 def _credential() -> str:
     """Active channel credential ('' when unconfigured)."""
     if _cfg["channel"] == "wecom":
@@ -363,13 +400,25 @@ async def _run_once(allow_push: bool) -> None:
             prev = _cfg["seenPlans"].get(k)
             cur = current.get(k)
             if prev == cur:
+                # direction unchanged: check whether the resting order's
+                # entry/stop drifted materially vs the last PUSHED plan
+                if cur is not None:
+                    amend = _amend_event(k, plans[(sym, itv)])
+                    if amend:
+                        events.append(amend)
                 continue
             if prev is None and cur is not None:
                 events.append(("新", sym, itv, plans[(sym, itv)], None))
             elif prev is not None and cur is None:
-                events.append(("消失", sym, itv, None, prev))
+                # 消失：把上次推送的挂单价一并带上（文案要显示给用户定位挂单），
+                # 在 pushedPlans 被清除之前抓取
+                last = dict((_cfg.get("pushedPlans") or {}).get(k) or {})
+                last["direction"] = prev
+                events.append(("消失", sym, itv, None, last))
             else:
-                events.append(("转向", sym, itv, plans[(sym, itv)], prev))
+                last = dict((_cfg.get("pushedPlans") or {}).get(k) or {})
+                last["direction"] = prev
+                events.append(("转向", sym, itv, plans[(sym, itv)], last))
         new_seen = dict(_cfg["seenPlans"])
         for sym, itv in jobs:
             if (sym, itv) in failed:
@@ -380,6 +429,20 @@ async def _run_once(allow_push: bool) -> None:
             else:
                 new_seen.pop(fp_key(sym, itv), None)
         _cfg["seenPlans"] = new_seen
+        # record the prices we actually pushed this cycle (for next cycle's
+        # drift comparison). Pushed = appeared in an event this round, or was
+        # already tracked and still has a plan.
+        pushed = dict(_cfg.get("pushedPlans") or {})
+        for kind, sym, itv, plan, _prev in events:
+            if kind in ("新", "转向", "改单") and plan:
+                pushed[fp_key(sym, itv)] = {"entry": plan["entry"], "stop": plan["stop"],
+                                            "direction": plan["direction"]}
+        for sym, itv in jobs:
+            if (sym, itv) in failed:
+                continue
+            if current.get(fp_key(sym, itv)) is None:
+                pushed.pop(fp_key(sym, itv), None)  # plan gone: stop tracking
+        _cfg["pushedPlans"] = pushed
         _save()
 
     if _cfg["mode"] == "events":
@@ -387,17 +450,43 @@ async def _run_once(allow_push: bool) -> None:
             return
         title = f"CoinLens 信号 {_now_label()}"
         blocks: list[str] = []
-        for kind, sym, itv, plan, prev_dir in events:
+        for kind, sym, itv, plan, prev in events:
             tag = f"{sym} {itv} "
             if kind == "消失":
-                d = "多头" if prev_dir == "long" else "空头"
-                blocks.append(f"【消失】{tag}{d}计划已消失")
+                # prev = {"direction", "entry"?, "stop"?}（上次推送的挂单价）
+                pd_ = (prev or {}).get("direction")
+                d = "多头" if pd_ == "long" else "空头"
+                side = "买入" if pd_ == "long" else "卖出"
+                px = ""
+                if (prev or {}).get("entry") is not None:
+                    px = f"\n原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}"
+                blocks.append(
+                    f"【消失】{tag}{d}计划已消失{px}\n"
+                    f"⚠️ 立即撤销该{side}限价挂单（若已成交请检查仓位止损）")
+                continue
+            if kind == "改单":
+                old = prev or {}
+                head = f"【改单】{tag}{'做多' if plan['direction'] == 'long' else '做空'}（挂单价格漂移，请改单）"
+                drift_lines = []
+                if old.get("entry") is not None:
+                    drift_lines.append(f"旧入场 {_fmt(old['entry'])} → 新入场 {_fmt(plan['entry'])}")
+                if old.get("stop") is not None:
+                    drift_lines.append(f"旧止损 {_fmt(old['stop'])} → 新止损 {_fmt(plan['stop'])}")
+                blocks.append(head + "\n" + "\n".join(drift_lines) + "\n" + "\n".join(_plan_lines(plan)))
                 continue
             head = f"【{kind}】{tag}"
+            extra = ""
             if kind == "转向":
-                head += f"{'做多' if prev_dir == 'long' else '做空'} → "
+                pd_ = (prev or {}).get("direction")
+                head += f"{'做多' if pd_ == 'long' else '做空'} → "
+                # 转向也意味着旧方向挂单必须撤销；带上原挂单价方便定位
+                old_side = "买入" if pd_ == "long" else "卖出"
+                extra = ""
+                if (prev or {}).get("entry") is not None:
+                    extra = f"原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}\n"
+                extra += f"⚠️ 先撤销原{old_side}挂单，再按新方向下单\n"
             head += "做多" if plan["direction"] == "long" else "做空"
-            blocks.append(head + "\n" + "\n".join(_plan_lines(plan)))
+            blocks.append(head + "\n" + extra + "\n".join(_plan_lines(plan)))
         content = "\n----------\n".join(blocks)
     else:  # brief
         title = f"CoinLens 每小时提示 {_now_label()}"
@@ -478,6 +567,7 @@ def update_config(enabled: bool | None = None, mode: str | None = None,
         _cfg["wecomKey"] = key
     _cfg["seeded"] = False
     _cfg["seenPlans"] = {}
+    _cfg["pushedPlans"] = {}
     _state["planStates"] = {}
     _save()
 

@@ -19,6 +19,7 @@ backend/tests/_5y_cache_*.pkl
 backend/tests/_ashare_rec_*.pkl
 backend/tests/_us_rec_*.pkl
 backend/tests/_usc_rec_*.pkl
+backend/tests/_wyckfix_*.pkl
 
 # A股 ETF 东财/腾讯日线本地缓存（tests/ashare_data.py --refresh 可重建）
 backend/data/ashare/
