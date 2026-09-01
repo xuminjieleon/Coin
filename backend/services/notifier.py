@@ -6,7 +6,11 @@ Design (agreed with the user, 2026-08-27):
 - Fires at HH:05 every hour so the 1h candle is closed and cached.
 - Decision path is EXACTLY the API's: services.analysis.context.run_analysis.
 - mode "events" (default): push only on new plan / direction flip / plan
-  gone, one aggregated message. First cycle after (re)seed is silent.
+  gone / amend, one aggregated message. First cycle after (re)seed is silent.
+  Heartbeat (config "heartbeat", default on, 2026-09-01): when a cycle
+  produced NO events, a short "CoinLens 无变化 HH:MM" message is pushed so
+  the user can tell the service is alive; analysis failures in the round are
+  flagged in it. Brief mode always has content so no heartbeat there.
 - mode "brief": one message per hour with every configured symbol's plan
   snapshot in the same multi-line 【】 block format as events (idle symbols
   listed compactly per interval; plan fields drift with ATR — each message
@@ -86,12 +90,19 @@ DEFAULT_CFG = {
     "seeded": False,
     "seenPlans": {},
     "pushedPlans": {},  # "symbol|interval" -> {"entry","stop","direction"} of last PUSHED plan
+    "heartbeat": True,  # events 模式无事件时也推一条"无变化"心跳（2026-09-01 用户要求：确认服务活着）
 }
 
 # Amend event fires when entry OR stop drifted by >= this fraction of the
-# order's own risk (entry-stop distance). Below this the amend noise is not
-# worth a push; at/above it the resting order is meaningfully stale.
-AMEND_DRIFT_FRAC = 0.20
+# order's own risk (entry-stop distance) AND by >= AMEND_MIN_PRICE_PCT of
+# price. The price floor exists because in low-vol regimes the risk distance
+# is so tight that frac×risk alone fires on sub-0.5% price moves — 30d replay
+# (tests/amend_freq_stat.py, 2026-09-01): 0.20 frac = 67 amends/day system-wide,
+# median drift 0.58% of price, 78~90% firing within 1-2 bars of the last push
+# (plan breathing noise, not a stale order). 0.40 + 0.5% floor ≈ 30/day,
+# median drift ~1% of price at fire time.
+AMEND_DRIFT_FRAC = 0.40
+AMEND_MIN_PRICE_PCT = 0.5
 
 
 def _norm_intervals(raw) -> list[str]:
@@ -260,10 +271,11 @@ def _amend_event(key: str, plan: dict):
     drifted materially from the last PUSHED resting order, else None.
 
     Drift is measured in units of the order's own risk (entry-stop distance):
-    if entry OR stop moved by >= AMEND_DRIFT_FRAC x risk, the resting limit
-    order is stale enough to be worth an amend push. We compare against the
-    last PUSHED prices (persisted), not the previous analysis, so we don't
-    re-push every hour when nothing was acted on."""
+    if entry OR stop moved by >= AMEND_DRIFT_FRAC x risk AND by >=
+    AMEND_MIN_PRICE_PCT % of price, the resting limit order is stale enough
+    to be worth an amend push. We compare against the last PUSHED prices
+    (persisted), not the previous analysis, so we don't re-push every hour
+    when nothing was acted on."""
     pushed = (_cfg.get("pushedPlans") or {}).get(key)
     if not pushed:
         return None  # never pushed (e.g. seeded silently): nothing resting to amend
@@ -275,7 +287,8 @@ def _amend_event(key: str, plan: dict):
     old_risk = abs(pushed["entry"] - pushed["stop"])
     base = max(risk, old_risk)
     drift = max(abs(plan["entry"] - pushed["entry"]), abs(plan["stop"] - pushed["stop"]))
-    if base > 0 and drift / base >= AMEND_DRIFT_FRAC:
+    if (base > 0 and drift / base >= AMEND_DRIFT_FRAC
+            and drift / plan["entry"] * 100 >= AMEND_MIN_PRICE_PCT):
         sym, itv = key.split("|", 1)
         return ("改单", sym, itv, plan, pushed)
     return None
@@ -447,47 +460,57 @@ async def _run_once(allow_push: bool) -> None:
 
     if _cfg["mode"] == "events":
         if not events:
-            return
-        title = f"CoinLens 信号 {_now_label()}"
-        blocks: list[str] = []
-        for kind, sym, itv, plan, prev in events:
-            tag = f"{sym} {itv} "
-            if kind == "消失":
-                # prev = {"direction", "entry"?, "stop"?}（上次推送的挂单价）
-                pd_ = (prev or {}).get("direction")
-                d = "多头" if pd_ == "long" else "空头"
-                side = "买入" if pd_ == "long" else "卖出"
-                px = ""
-                if (prev or {}).get("entry") is not None:
-                    px = f"\n原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}"
-                blocks.append(
-                    f"【消失】{tag}{d}计划已消失{px}\n"
-                    f"⚠️ 立即撤销该{side}限价挂单（若已成交请检查仓位止损）")
-                continue
-            if kind == "改单":
-                old = prev or {}
-                head = f"【改单】{tag}{'做多' if plan['direction'] == 'long' else '做空'}（挂单价格漂移，请改单）"
-                drift_lines = []
-                if old.get("entry") is not None:
-                    drift_lines.append(f"旧入场 {_fmt(old['entry'])} → 新入场 {_fmt(plan['entry'])}")
-                if old.get("stop") is not None:
-                    drift_lines.append(f"旧止损 {_fmt(old['stop'])} → 新止损 {_fmt(plan['stop'])}")
-                blocks.append(head + "\n" + "\n".join(drift_lines) + "\n" + "\n".join(_plan_lines(plan)))
-                continue
-            head = f"【{kind}】{tag}"
-            extra = ""
-            if kind == "转向":
-                pd_ = (prev or {}).get("direction")
-                head += f"{'做多' if pd_ == 'long' else '做空'} → "
-                # 转向也意味着旧方向挂单必须撤销；带上原挂单价方便定位
-                old_side = "买入" if pd_ == "long" else "卖出"
+            if not _cfg.get("heartbeat", True):
+                return
+            # 心跳：无事件也推一条，让用户确认服务活着（brief 模式本身
+            # 每小时必有消息，不需要心跳）。失败键如实标注。
+            title = f"CoinLens 无变化 {_now_label()}"
+            lines = ["本小时无新计划/转向/消失/改单，服务运行正常。"]
+            if failed:
+                bad = sorted(f"{s} {i}" for s, i in failed)
+                lines.append(f"⚠️ 本轮分析失败（未参与比对）：{'、'.join(bad)}")
+            content = "\n".join(lines)
+        else:
+            title = f"CoinLens 信号 {_now_label()}"
+            blocks: list[str] = []
+            for kind, sym, itv, plan, prev in events:
+                tag = f"{sym} {itv} "
+                if kind == "消失":
+                    # prev = {"direction", "entry"?, "stop"?}（上次推送的挂单价）
+                    pd_ = (prev or {}).get("direction")
+                    d = "多头" if pd_ == "long" else "空头"
+                    side = "买入" if pd_ == "long" else "卖出"
+                    px = ""
+                    if (prev or {}).get("entry") is not None:
+                        px = f"\n原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}"
+                    blocks.append(
+                        f"【消失】{tag}{d}计划已消失{px}\n"
+                        f"⚠️ 立即撤销该{side}限价挂单（若已成交请检查仓位止损）")
+                    continue
+                if kind == "改单":
+                    old = prev or {}
+                    head = f"【改单】{tag}{'做多' if plan['direction'] == 'long' else '做空'}（挂单价格漂移，请改单）"
+                    drift_lines = []
+                    if old.get("entry") is not None:
+                        drift_lines.append(f"旧入场 {_fmt(old['entry'])} → 新入场 {_fmt(plan['entry'])}")
+                    if old.get("stop") is not None:
+                        drift_lines.append(f"旧止损 {_fmt(old['stop'])} → 新止损 {_fmt(plan['stop'])}")
+                    blocks.append(head + "\n" + "\n".join(drift_lines) + "\n" + "\n".join(_plan_lines(plan)))
+                    continue
+                head = f"【{kind}】{tag}"
                 extra = ""
-                if (prev or {}).get("entry") is not None:
-                    extra = f"原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}\n"
-                extra += f"⚠️ 先撤销原{old_side}挂单，再按新方向下单\n"
-            head += "做多" if plan["direction"] == "long" else "做空"
-            blocks.append(head + "\n" + extra + "\n".join(_plan_lines(plan)))
-        content = "\n----------\n".join(blocks)
+                if kind == "转向":
+                    pd_ = (prev or {}).get("direction")
+                    head += f"{'做多' if pd_ == 'long' else '做空'} → "
+                    # 转向也意味着旧方向挂单必须撤销；带上原挂单价方便定位
+                    old_side = "买入" if pd_ == "long" else "卖出"
+                    extra = ""
+                    if (prev or {}).get("entry") is not None:
+                        extra = f"原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}\n"
+                    extra += f"⚠️ 先撤销原{old_side}挂单，再按新方向下单\n"
+                head += "做多" if plan["direction"] == "long" else "做空"
+                blocks.append(head + "\n" + extra + "\n".join(_plan_lines(plan)))
+            content = "\n----------\n".join(blocks)
     else:  # brief
         title = f"CoinLens 每小时提示 {_now_label()}"
         content = _brief_content(intervals, symbols, plans, failed)
@@ -543,7 +566,7 @@ def start() -> None:
 def update_config(enabled: bool | None = None, mode: str | None = None,
                   symbols: list[str] | None = None, intervals: list[str] | None = None,
                   token: str | None = None, channel: str | None = None,
-                  wecom_key: str | None = None) -> None:
+                  wecom_key: str | None = None, heartbeat: bool | None = None) -> None:
     """Apply a config patch and re-seed the plan watcher (avoids a storm of
     fake 'new plan' events for symbols added / intervals changed)."""
     global _cfg
@@ -551,6 +574,8 @@ def update_config(enabled: bool | None = None, mode: str | None = None,
         _cfg["enabled"] = bool(enabled)
     if mode is not None:
         _cfg["mode"] = mode
+    if heartbeat is not None:
+        _cfg["heartbeat"] = bool(heartbeat)
     if symbols is not None:
         _cfg["symbols"] = symbols
     if intervals is not None:
@@ -604,6 +629,7 @@ def status() -> dict:
         "enabled": _cfg["enabled"],
         "mode": _cfg["mode"],
         "channel": _cfg["channel"],
+        "heartbeat": bool(_cfg.get("heartbeat", True)),
         "symbols": _cfg["symbols"],
         "intervals": _norm_intervals(_cfg.get("intervals")),
         "tokenSet": bool(token),

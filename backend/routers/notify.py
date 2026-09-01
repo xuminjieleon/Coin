@@ -13,6 +13,7 @@ class NotifyConfig(BaseModel):
     enabled: bool | None = None
     mode: str | None = None
     channel: str | None = None
+    heartbeat: bool | None = None
     symbols: list[str] | None = Field(default=None, min_length=1, max_length=10)
     intervals: list[str] | None = Field(default=None, min_length=1, max_length=4)
     interval: str | None = None  # legacy single-interval form -> intervals=[x]
@@ -51,6 +52,7 @@ async def update_notify_config(cfg: NotifyConfig):
         enabled=cfg.enabled,
         mode=cfg.mode,
         channel=cfg.channel,
+        heartbeat=cfg.heartbeat,
         symbols=symbols,
         intervals=intervals,
         token=cfg.token,
