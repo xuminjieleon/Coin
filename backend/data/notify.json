@@ -1,5 +1,5 @@
 {
-  "enabled": true,
+  "enabled": false,
   "mode": "events",
   "channel": "wecom",
   "symbols": [
@@ -10,7 +10,8 @@
     "XRPUSDT",
     "ZECUSDT",
     "DOGEUSDT",
-    "SUIUSDT"
+    "SUIUSDT",
+    "LTCUSDT"
   ],
   "intervals": [
     "1h",

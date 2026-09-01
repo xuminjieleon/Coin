@@ -1,6 +1,6 @@
-"""Push-list 5y backtest with per-coin detail (round 35: 7 coins; round 36: +SUI = 8).
+"""Push-list 5y backtest with per-coin detail (round 35: 7 coins; round 36: +SUI = 8; round 50: +LTC = 9).
 
-推送事件列表币种（BTC/ETH/SOL/BNB + XRP/ZEC/DOGE + SUI[第三十六轮加入]）
+推送事件列表币种（BTC/ETH/SOL/BNB + XRP/ZEC/DOGE + SUI[第三十六轮加入] + LTC[第五十轮加入]）
 按 BACKTEST §4 同口径重算，并输出报告此前缺失的分币明细：
 
   - 口径：R13 生产几何 CONF5（backtest_5y 单源）、5 年窗口（1w 全历史）、
@@ -8,8 +8,11 @@
     （sim_journal_order，用户裁定；4h/1d/1w 跟踪族两顺序等价用 sim_outcome_fast）
   - SUI 合约 2023-05 上线：1h/4h/1d 为上市起全历史（~3.3 年），1w 仅 ~174 根
     不足 warmup(170)+fwd_room(32)——如实无成交，与第七轮"1w 历史不足跳过"同口径
+  - LTC 2017-12 上市跑满 5 年四周期（第五十轮：四周期合计 +904.0R、逐年全正、
+    1h 下界 +521.5R/4h +340.7R/1d +40.8R/1w +1.0R）
   - 记录缓存 _5y_cache_*（四币命中 08-28 快照；XRP/ZEC/DOGE 第三十五轮落盘；
-    SUI 新算）——窗口尾差如实声明：四币尾部 2026-08-28 / 新币 2026-08-29
+    SUI 第三十六轮；LTC 第五十轮）——窗口尾差如实声明：四币尾部 2026-08-28 /
+    XRP/ZEC/DOGE 2026-08-29 / SUI 2026-08-29 / LTC 2026-09-01
   - §7.8：分两阶段——阶段1 单事件循环 Semaphore(3) 并发抓取（--fetch-only）；
     阶段2 每 symbol 一个 spawn worker 纯 CPU
   - 复利段复用第二十九轮 harness（compound + 共享预算 scale 参数化）
@@ -45,12 +48,16 @@ from profit2_r5 import with_loose_plans
 import compound_backtest as cb
 
 SYMBOLS8 = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT",
-            "XRPUSDT", "ZECUSDT", "DOGEUSDT", "SUIUSDT"]
+            "XRPUSDT", "ZECUSDT", "DOGEUSDT", "SUIUSDT", "LTCUSDT"]
 OLD4 = SYMBOLS8[:4]
-NEW4 = SYMBOLS8[4:]
+NEW4 = SYMBOLS8[4:8]  # XRP/ZEC/DOGE/SUI（第三十五/三十六轮加入）
 TFS = ("1h", "4h", "1d", "1w")
 FEE_NET = 0.0010  # 双边 0.10%（单边 0.05%，既有报告净口径）
 FAR = 4_000_000_000_000
+NOW_MS = 1788271200000  # 2026-09-01 14:00 UTC — 第五十轮起评估窗口钉真实时间
+                         # （FAR 锚点使 _contiguous_top_count 恒失败、新币首次回填死循环，
+                         #  见 backtest_ltc_sndk 踩坑登记；老币正典缓存已连续覆盖故 FAR 无害，
+                         #  统一改 NOW_MS 对齐第四十七轮"钉 end_time"标准）
 YEAR_MS = 365.25 * 86400 * 1000
 
 
@@ -67,7 +74,7 @@ async def fetch_all():
         async with sem:
             for attempt in range(4):
                 try:
-                    rows = await ps.kline_cache.get_klines(sym, itv, W5[itv], end_time=FAR)
+                    rows = await ps.kline_cache.get_klines(sym, itv, W5[itv], end_time=NOW_MS)
                     print(f"[fetch-ok] {sym} {itv}: {len(rows)} bars", flush=True)
                     return
                 except Exception as exc:
@@ -82,7 +89,7 @@ async def fetch_all():
 # ---------------- phase 2: per-symbol worker (pure CPU) ----------------
 
 def load_df(sym, itv):
-    rows = ps.kline_cache._read_rows(sym, itv, FAR, W5[itv])
+    rows = ps.kline_cache._read_rows(sym, itv, NOW_MS, W5[itv])
     return ps.kline_cache.rows_to_df(rows)
 
 
@@ -224,11 +231,12 @@ def main():
         spans[sym] = (ps.fmt_ts(int(df["time"].iloc[0])), ps.fmt_ts(int(df["time"].iloc[-1])))
     print(f"[窗口] 四币尾部 {spans['BTCUSDT'][1]} / XRP尾部 {spans['XRPUSDT'][1]}"
           f"（1h 起点差 {spans['BTCUSDT'][0]} vs {spans['XRPUSDT'][0]}，分年表 2021 年内影响 <0.4%；"
-          f"SUI 上市 2023-05 窗口 {spans['SUIUSDT'][0]}..{spans['SUIUSDT'][1]}，1w 不足 warmup 无成交）")
+          f"SUI 上市 2023-05 窗口 {spans['SUIUSDT'][0]}..{spans['SUIUSDT'][1]}，1w 不足 warmup 无成交；"
+          f"LTC 尾部 {spans['LTCUSDT'][1]}）")
 
     # ---- per-coin x per-tf detail ----
     print(f"\n{'='*108}")
-    print(f"===== 8 币分币明细（R13 几何、容量约束串行、毛口径；1h=下界口径（用户裁定），4h/1d/1w 两顺序等价）=====")
+    print(f"===== 9 币分币明细（R13 几何、容量约束串行、毛口径；1h=下界口径（用户裁定），4h/1d/1w 两顺序等价）=====")
     print(f"{'='*108}")
     coin_tot = {}
     for sym in SYMBOLS8:
@@ -251,15 +259,16 @@ def main():
     for sym, tot in sorted(coin_tot.items(), key=lambda x: -x[1]):
         print(f"  {sym:<9} {tot:>+8.1f}R")
 
-    # ---- pooled 8 vs old-4 vs new-4, per tf ----
+    # ---- pooled 9 vs old-4 vs new-4, per tf ----
     print(f"\n-- 池化对比（同 sim 口径重评）--")
-    print(f"{'周期':<4} {'8币合计':>10} {'原4币':>10} {'新加入4币':>10}")
+    print(f"{'周期':<4} {'9币合计':>10} {'原4币':>10} {'新加入4币':>10} {'LTC':>10}")
     for tf in TFS:
         st8 = stats_of([t for s in SYMBOLS8 for t in data[s][tf]])
         st4 = stats_of([t for s in OLD4 for t in data[s][tf]])
         stn = stats_of([t for s in NEW4 for t in data[s][tf]])
+        stl = stats_of(data["LTCUSDT"][tf])
         print(f"{tf:<4} {st8['totalR']:>+9.1f}R {st4['totalR']:>+9.1f}R {stn['totalR']:>+9.1f}R "
-              f"(n={st8['filled']})")
+              f"{stl['totalR']:>+9.1f}R (n={st8['filled']})")
 
     # ---- yearly pooled (1h/4h/1d) ----
     print(f"\n-- 池化逐年（毛 R）--")
@@ -284,7 +293,7 @@ def main():
         print(f"  {sym:<9}{cells}")
 
     # ---- fee sensitivity ----
-    print(f"\n-- 费率敏感性（8 币池化，feeR=双边×entry/risk）--")
+    print(f"\n-- 费率敏感性（9 币池化，feeR=双边×entry/risk）--")
     print(f"  {'周期':<4} {'毛':>10} {'双边0.05%':>11} {'双边0.06%':>11} {'双边0.10%':>11}")
     for tf in ("1h", "4h", "1d"):
         trades = [t for s in SYMBOLS8 for t in data[s][tf]]
@@ -294,7 +303,7 @@ def main():
             cells.append(trade_stats(net)["totalR"])
         print(f"  {tf:<4} {cells[0]:>+9.1f}R {cells[1]:>+10.1f}R {cells[2]:>+10.1f}R {cells[3]:>+10.1f}R")
 
-    # ---- compound (round-29 harness, 8 coins) ----
+    # ---- compound (round-29 harness, 9 coins) ----
     ports = {
         "仅1h(下界)": [t for s in SYMBOLS8 for t in data[s]["1h"]],
         "仅4h": [t for s in SYMBOLS8 for t in data[s]["4h"]],
@@ -302,7 +311,7 @@ def main():
         "1h+4h共享": shared_budget_portfolio(data, SYMBOLS8),
     }
     print(f"\n{'='*100}")
-    print(f"===== 复利口径（8 币，f=1%，净@双边0.10%，事件账户=第二十九轮 harness）=====")
+    print(f"===== 复利口径（9 币，f=1%，净@双边0.10%，事件账户=第二十九轮 harness）=====")
     print(f"{'='*100}")
     print(f"{'组合':<13}{'复利期末':>12} {'年化':>9} {'最大回撤':>9} {'非复利对照':>12} {'笔数':>7}")
     for name, tr in ports.items():
