@@ -127,6 +127,34 @@ def _default_plan(interval: str, entry: float, stop: float | None) -> dict:
             "texitBars": texit, "fillBars": fill_bars}
 
 
+def trail_stop_level(entry: float, mfe: float, risk: float, trail_r: float,
+                     long: bool) -> float | None:
+    """Trailing stop level implied by the MFE, or None before the trail arms
+    (MFE beyond entry by less than trail_r).
+
+    SHARED SEMANTICS (round 55): replay_plan's step 3 (the frozen reference
+    the backtests and journal adherence are built on) computes its ratchet
+    through this helper, and the live executor imports it — live exits stay
+    identical to journal/backtest levels by construction."""
+    if risk <= 0 or trail_r is None:
+        return None
+    mfe_r = (mfe - entry) / risk if long else (entry - mfe) / risk
+    t = mfe_r - trail_r
+    if t <= 0:
+        return None
+    return entry + t * risk if long else entry - t * risk
+
+
+def bars_held_since(opened_at: int, interval: str, now_ms: int) -> int:
+    """Closed-bar count since the bar containing the entry fill (the bar that
+    contains the open counts as bar 1 — the replay bars_held convention the
+    time exit uses). SHARED with the live executor (round 55)."""
+    step = STEP_MS.get(interval, 3_600_000)
+    first_bar = (int(opened_at) // step) * step
+    last_closed = (int(now_ms) // step) * step - step
+    return (last_closed - first_bar) // step + 1
+
+
 async def replay_plan(trade: dict, until_ts: int | None = None) -> dict:
     """Simulate plan management from open time; return the planned outcome.
 
@@ -188,15 +216,15 @@ async def replay_plan(trade: dict, until_ts: int | None = None) -> dict:
         if not be_done and ((long and h >= be_trigger) or ((not long) and low <= be_trigger)):
             be_done = True
             stop_cur = entry
-        # 3) trail update from MFE (after BE; runner management)
+        # 3) trail update from MFE (after BE; runner management) — shared
+        #    ratchet helper (round 55): replay and live executor use one math
         if be_done and trail is not None:
             mfe = max(mfe, h) if long else min(mfe, low)
-            mfe_r = (mfe - entry) / risk if long else (entry - mfe) / risk
-            trail_stop_r = mfe_r - float(trail)
-            if trail_stop_r > 0:
-                new_stop = entry + trail_stop_r * risk if long else entry - trail_stop_r * risk
-                if (long and new_stop > stop_cur) or ((not long) and new_stop < stop_cur):
-                    stop_cur = new_stop
+            new_stop = trail_stop_level(entry, mfe, risk, float(trail), long)
+            if new_stop is not None and (
+                (long and new_stop > stop_cur) or ((not long) and new_stop < stop_cur)
+            ):
+                stop_cur = new_stop
         # 4) fixed target (1h family)
         if target is not None and ((long and h >= target) or ((not long) and low <= target)):
             exit_price, reason = target, "target"

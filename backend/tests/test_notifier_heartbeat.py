@@ -8,6 +8,7 @@ if sys.stdout and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 from services import notifier
+from services.analysis import context
 
 # 防落盘污染：所有状态写操作走内存（update_config/_run_once 都会 _save）
 notifier._save = lambda: None
@@ -38,7 +39,7 @@ async def fake_send(title, content):
 
 
 fake_send.calls = []
-notifier.run_analysis = fake_analysis
+context.run_analysis = fake_analysis
 notifier._send = fake_send
 
 # 1) 无事件 + heartbeat 开 -> 推心跳（seen 已有同方向 -> 不产生事件）
@@ -76,11 +77,11 @@ print("4) 首轮静默播种 -> 不推心跳  OK")
 
 # 5) 全部分析失败 -> 不推（沿用既有快速失败，不误报"运行正常"）
 async def failing_analysis(symbol, interval, limit=500, as_of=None):
-    raise notifier.NoKlinesError("x")
+    raise context.NoKlinesError("x")
 
 fake_send.calls.clear()
 setup(seen={"BTCUSDT|1h": "long"})
-notifier.run_analysis = failing_analysis
+context.run_analysis = failing_analysis
 asyncio.run(notifier._run_once(allow_push=True))
 assert not fake_send.calls, fake_send.calls
 assert "analysis failed" in (notifier._state["lastError"] or "")
@@ -94,10 +95,10 @@ notifier._cfg["seenPlans"] = {"BTCUSDT|1h": "long", "ETHUSDT|1h": "long"}
 
 async def partial_analysis(symbol, interval, limit=500, as_of=None):
     if symbol == "ETHUSDT":
-        raise notifier.NoKlinesError("x")
+        raise context.NoKlinesError("x")
     return await fake_analysis(symbol, interval, limit, as_of)
 
-notifier.run_analysis = partial_analysis
+context.run_analysis = partial_analysis
 asyncio.run(notifier._run_once(allow_push=True))
 assert len(fake_send.calls) == 1
 t, c = fake_send.calls[0]

@@ -75,21 +75,15 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from services import notify
-from services.analysis.context import ALLOWED_INTERVALS, NoKlinesError, STEP_MS, run_analysis
+from services.analysis.context import (
+    ALLOWED_INTERVALS,
+    closed_bar_analysis,
+    run_analysis,  # noqa: F401  (tests patch this name on the notifier module)
+)
 
 DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "notify.json"
 
 MODES = {"events", "brief"}
-
-_EPOCH_MONDAY_MS = 4 * 86_400_000  # weekly bars open Monday 00:00 UTC (epoch was a Thursday)
-
-
-def _last_closed_open(now_ms: int, interval: str) -> int:
-    """Open time of the newest bar that has already CLOSED at now_ms.
-    UTC-epoch aligned for 1h/4h/1d; weekly anchored to Monday."""
-    step = STEP_MS[interval]
-    anchor = _EPOCH_MONDAY_MS if interval == "1w" else 0
-    return (now_ms - anchor) // step * step + anchor - step
 
 DEFAULT_CFG = {
     "enabled": False,
@@ -356,28 +350,38 @@ def _amend_event(key: str, plan: dict):
     """Return an ("改单", ...) event tuple when the current plan's entry/stop
     drifted materially from the last PUSHED resting order, else None.
 
-    Drift is measured in units of the order's own risk (entry-stop distance):
-    if entry OR stop moved by >= AMEND_DRIFT_FRAC x risk AND by >=
-    AMEND_MIN_PRICE_PCT % of price, the resting limit order is stale enough
-    to be worth an amend push. We compare against the last PUSHED prices
-    (persisted), not the previous analysis, so we don't re-push every hour
-    when nothing was acted on."""
+    Drift is measured against the last PUSHED prices (persisted), not the
+    previous analysis, so we don't re-push every hour when nothing was
+    acted on. The threshold metric itself is shared with the executor
+    (drift_material)."""
     pushed = (_cfg.get("pushedPlans") or {}).get(key)
     if not pushed:
         return None  # never pushed (e.g. seeded silently): nothing resting to amend
-    if pushed.get("direction") != plan.get("direction"):
-        return None  # direction flip is handled as its own event
-    risk = abs(plan["entry"] - plan["stop"])
-    if risk <= 0:
+    if not drift_material(pushed, plan):
         return None
-    old_risk = abs(pushed["entry"] - pushed["stop"])
+    sym, itv = key.split("|", 1)
+    return ("改单", sym, itv, plan, pushed)
+
+
+def drift_material(old_plan: dict, new_plan: dict) -> bool:
+    """True when entry/stop drifted materially (AMEND_DRIFT_FRAC x the
+    order's own risk AND >= AMEND_MIN_PRICE_PCT of price) with the
+    direction unchanged.
+
+    SHARED SEMANTICS (round 55): this single metric decides BOTH the pushed
+    【改单】 event and the executor's automatic amend — the executor imports
+    it; do not re-implement."""
+    if old_plan.get("direction") != new_plan.get("direction"):
+        return False  # direction flip is its own event, not an amend
+    risk = abs(new_plan["entry"] - new_plan["stop"])
+    old_risk = abs(old_plan["entry"] - old_plan["stop"])
+    if risk <= 0 or old_risk <= 0:
+        return False
     base = max(risk, old_risk)
-    drift = max(abs(plan["entry"] - pushed["entry"]), abs(plan["stop"] - pushed["stop"]))
-    if (base > 0 and drift / base >= AMEND_DRIFT_FRAC
-            and drift / plan["entry"] * 100 >= AMEND_MIN_PRICE_PCT):
-        sym, itv = key.split("|", 1)
-        return ("改单", sym, itv, plan, pushed)
-    return None
+    drift = max(abs(new_plan["entry"] - old_plan["entry"]),
+                abs(new_plan["stop"] - old_plan["stop"]))
+    return (drift / base >= AMEND_DRIFT_FRAC
+            and drift / new_plan["entry"] * 100 >= AMEND_MIN_PRICE_PCT)
 
 
 def _credential() -> str:
@@ -398,23 +402,8 @@ async def _send(title: str, content: str) -> tuple[bool, str]:
 # ---------------------------------------------------------------- analysis
 
 async def _safe_analysis(symbol: str, interval: str) -> dict | None:
-    """Closed-bar-only analysis (option B, 2026-08-29): replay semantics with
-    as_of = newest CLOSED bar's open time (kline_cache end_time is inclusive
-    and self-heals missing pages, so the just-closed bar is always fetched).
-    Guard: if the returned last candle is not the requested as_of bar (data
-    gap / partial fetch), treat this round as failed — the previous
-    fingerprint stands, never compare against stale data."""
-    try:
-        as_of = _last_closed_open(int(time.time() * 1000), interval)
-        analysis = await run_analysis(symbol, interval, 500, as_of=as_of)
-        candles = analysis.get("candles") or []
-        if not candles or int(candles[-1]["time"]) != as_of:
-            return None
-        return analysis
-    except NoKlinesError:
-        return None
-    except Exception:
-        return None
+    """Shared closed-bar analysis (context.closed_bar_analysis, round 55)."""
+    return await closed_bar_analysis(symbol, interval)
 
 
 def _plan_state(symbol: str, analysis: dict | None) -> dict | None:

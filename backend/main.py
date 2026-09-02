@@ -7,6 +7,7 @@ from routers import (
     backtest,
     calendar,
     derivatives,
+    executor,
     journal,
     macro,
     market,
@@ -17,22 +18,37 @@ from routers import (
     sources,
     symbols,
 )
-from services import binance, gateio, notifier, sysproxy
+from services import binance, binance_trade, executor as executor_service, gateio, notifier, sysproxy
 
 app = FastAPI(title="CoinLens")
 
 
 @app.on_event("startup")
-async def _start_notifier() -> None:
+async def _start_background() -> None:
     notifier.start()
+    # the executor must never take the whole backend down with it (W5):
+    # a locked/corrupt executor.db must not kill the 24/7 notifier
+    try:
+        executor_service.start()
+    except Exception as exc:  # noqa: BLE001
+        import sys
+        print(f"[executor] start failed, executor disabled: {exc}", file=sys.stderr)
 
 
 @app.on_event("shutdown")
 async def _close_http_clients() -> None:
+    # executor first: cancel its loops BEFORE closing the HTTP clients so an
+    # in-flight tick cannot complete real order placements during teardown
+    # (W6); binance_trade also refuses requests after close_client()
+    try:
+        await executor_service.stop()
+    except Exception:  # noqa: BLE001
+        pass
     await binance.close_client()
     await gateio.close_client()
     await sysproxy.close_client()
     await notify.close_client()
+    await binance_trade.close_client()
 
 app.add_middleware(
     CORSMiddleware,
@@ -53,6 +69,7 @@ app.include_router(journal.router)
 app.include_router(portfolio.router)
 app.include_router(sources.router)
 app.include_router(notify.router)
+app.include_router(executor.router)
 
 
 @app.get("/api/health")

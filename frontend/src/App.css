@@ -2128,6 +2128,161 @@ body {
   background: rgba(41, 98, 255, 0.15);
 }
 
+/* ---------- auto-trade panel ---------- */
+
+.at-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.at-badge {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--card-border);
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.at-badge-paper {
+  color: var(--text-dim);
+}
+
+.at-badge-test {
+  color: var(--accent);
+  border-color: rgba(41, 98, 255, 0.45);
+}
+
+.at-badge-live {
+  color: var(--down);
+  border-color: rgba(239, 83, 80, 0.5);
+}
+
+.at-toggle {
+  background: rgba(41, 98, 255, 0.15);
+  border: 1px solid rgba(41, 98, 255, 0.45);
+  border-radius: 6px;
+  color: var(--accent);
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.at-toggle-on {
+  background: rgba(38, 166, 154, 0.15);
+  border-color: rgba(38, 166, 154, 0.5);
+  color: var(--up);
+}
+
+.at-panic {
+  margin-left: auto;
+  background: rgba(239, 83, 80, 0.12);
+  border: 1px solid rgba(239, 83, 80, 0.55);
+  border-radius: 6px;
+  color: var(--down);
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.at-positions {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.at-pos {
+  border: 1px solid var(--card-border);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
+.at-pos-head {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.at-pos-levels {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.at-cfg {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.at-cfg input {
+  width: 90px;
+}
+
+.at-setup {
+  margin-top: 10px;
+  font-size: 12px;
+}
+
+.at-setup summary {
+  cursor: pointer;
+  color: var(--accent);
+}
+
+.at-setup-body {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.at-setup-body label {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  color: var(--text-dim);
+}
+
+.at-setup-body input {
+  flex: 1;
+  min-width: 0;
+}
+
+.at-setup-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.at-danger {
+  border-color: rgba(239, 83, 80, 0.55);
+  color: var(--down);
+}
+
+.at-events {
+  margin-top: 10px;
+}
+
+.at-note {
+  margin-top: 6px;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 /* ---------- responsive ---------- */
 
 /* narrow screens (tablet portrait / phones): sidebar stacks below chart */

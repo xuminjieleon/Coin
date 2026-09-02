@@ -3,3 +3,6 @@ BINANCE_FAPI = "https://fapi.binance.com"
 
 # 行情镜像（官方域名不可达时的 K 线/交易对列表回退源）
 BINANCE_SPOT_MIRROR = "https://data-api.binance.vision"
+
+# 合约测试网（免费假钱环境，executor 自动交易先行验证用）
+BINANCE_FAPI_TESTNET = "https://testnet.binancefuture.com"

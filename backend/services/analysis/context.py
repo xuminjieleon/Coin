@@ -7,6 +7,7 @@ and pushed messages.
 """
 
 import asyncio
+import time
 
 import pandas as pd
 
@@ -24,6 +25,42 @@ MTF_MAP = {
 }
 
 STEP_MS = {"1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000, "1w": 604_800_000}
+
+_EPOCH_MONDAY_MS = 4 * 86_400_000  # weekly bars open Monday 00:00 UTC (epoch was a Thursday)
+
+
+def last_closed_open(now_ms: int, interval: str) -> int:
+    """Open time of the newest bar that has already CLOSED at now_ms.
+    UTC-epoch aligned for 1h/4h/1d; weekly anchored to Monday.
+
+    SHARED SEMANTICS (2026-09-02, round 55): the notifier, the executor and
+    any future consumer must derive the exact same as-of bar — do not
+    re-implement locally."""
+    step = STEP_MS[interval]
+    anchor = _EPOCH_MONDAY_MS if interval == "1w" else 0
+    return (now_ms - anchor) // step * step + anchor - step
+
+
+async def closed_bar_analysis(symbol: str, interval: str, limit: int = 500) -> dict | None:
+    """Closed-bar-only analysis (replay semantics): run_analysis with
+    as_of = newest CLOSED bar's open time. Returns None when data is
+    missing or the returned last candle is not the requested as_of bar
+    (data gap / partial fetch) — never compare against stale data.
+
+    SHARED SEMANTICS (round 55): single implementation behind the notifier
+    push cycle AND the executor's order placement — a fix here propagates to
+    both; a local copy would let them drift apart."""
+    try:
+        as_of = last_closed_open(int(time.time() * 1000), interval)
+        analysis = await run_analysis(symbol, interval, limit, as_of=as_of)
+        candles = analysis.get("candles") or []
+        if not candles or int(candles[-1]["time"]) != as_of:
+            return None
+        return analysis
+    except NoKlinesError:
+        return None
+    except Exception:
+        return None
 
 
 class NoKlinesError(Exception):

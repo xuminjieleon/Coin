@@ -7,6 +7,7 @@ import TradePlanCard from './components/TradePlanCard'
 import PositionPanel from './components/PositionPanel'
 import PortfolioPanel from './components/PortfolioPanel'
 import JournalPanel from './components/JournalPanel'
+import AutoTradePanel from './components/AutoTradePanel'
 import DerivativesPanel from './components/DerivativesPanel'
 import VolumeProfilePanel from './components/VolumeProfilePanel'
 import CalendarPanel from './components/CalendarPanel'
@@ -440,6 +441,7 @@ export default function App() {
                 plan={analysis?.summary.tradePlan ?? null}
                 refreshKey={lastTime}
               />
+              <AutoTradePanel refreshKey={lastTime} />
             </>
           )}
         </aside>

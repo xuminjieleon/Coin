@@ -723,3 +723,109 @@ export interface PortfolioInput {
 export function advisePortfolio(input: PortfolioInput): Promise<PortfolioAdvice> {
   return postRequest<PortfolioAdvice>('/api/portfolio/advise', input)
 }
+
+// ---- Executor (自动交易) ----
+
+export interface ExecutorPosition {
+  id: number
+  key: string
+  symbol: string
+  interval: string
+  direction: 'long' | 'short'
+  state: 'pending' | 'open' | 'closed'
+  stateLabel: string
+  entry: number
+  stop: number
+  filled: number | null
+  beQty: number | null
+  avgPrice: number | null
+  beDone: boolean
+  awaitingEntry: boolean
+  beTrigger: number | null
+  target1: number | null
+  trailR: number | null
+  texitBars: number | null
+  fillBars: number | null
+  barsHeld: number | null
+  qty: number
+  mfe: number | null
+  createdAt: number
+  openedAt: number | null
+  closedAt: number | null
+  exitReason: string | null
+  exitPrice: number | null
+  rMultiple: number | null
+}
+
+export interface ExecutorEvent {
+  at: number
+  kind: string
+  text: string
+}
+
+export interface ExecutorStatus {
+  enabled: boolean
+  mode: 'paper' | 'testnet' | 'live'
+  testnet: boolean
+  dryRun: boolean
+  confirmLive: boolean
+  keysSet: boolean
+  apiKeyMasked: string
+  instance: string
+  symbols: string[]
+  intervals: string[]
+  riskPct: number
+  leverage: number
+  maxConcurrent: number
+  maxNotionalPctPer: number
+  maxGrossNotionalPct: number
+  dailyLossLimitR: number
+  equityUsd: number
+  postOnlyEntry: boolean
+  pushEvents: boolean
+  paused: boolean
+  todayRealizedR: number
+  reconciled: boolean
+  positions: ExecutorPosition[]
+  closedCount: number
+  closedSumR: number
+  lastPlanRun: number | null
+  nextRun: number | null
+  lastError: string | null
+  events: ExecutorEvent[]
+  note: string
+}
+
+export interface ExecutorConfigPatch {
+  enabled?: boolean
+  testnet?: boolean
+  dryRun?: boolean
+  confirmLive?: boolean
+  apiKey?: string
+  apiSecret?: string
+  symbols?: string[]
+  intervals?: string[]
+  riskPct?: number
+  leverage?: number
+  maxConcurrent?: number
+  dailyLossLimitR?: number
+  equityUsd?: number
+  postOnlyEntry?: boolean
+  pushEvents?: boolean
+}
+
+export function fetchExecutorStatus(): Promise<ExecutorStatus> {
+  return request<ExecutorStatus>('/api/executor')
+}
+
+export function updateExecutorConfig(patch: ExecutorConfigPatch): Promise<ExecutorStatus> {
+  return postRequest<ExecutorStatus>('/api/executor', patch)
+}
+
+export function testExecutor(): Promise<{ ok: boolean; mode: string; note?: string; error?: string }> {
+  return postRequest('/api/executor/test', {})
+}
+
+export function panicExecutor(): Promise<{ ok: boolean; closed: number }> {
+  return postRequest('/api/executor/panic', { confirm: 'PANIC' })
+}
