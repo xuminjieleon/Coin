@@ -90,6 +90,20 @@ PLAN_THRESHOLD = {
     "1w": 10,
 }
 
+# Round 56 (2026-09-02, USER DECREE — not a calibration): volatility-extreme
+# chase interception. In an expanded volatility state (Bollinger bandwidth
+# >80th pct of the trailing 200 bars) with price pinned to the dealing-range
+# extreme, an ATR-scaled pullback entry sits within one reversal candle of a
+# parabolic top/bottom: the "pullback" order fills as a de-facto chase order
+# and cannot survive the blow-off candle (the 2026-09-02 expanded-state 4h
+# parabolic-top long stopped by the reversal candle). The plan is SUPPRESSED
+# in the chase direction — no card, no push, no executor order. Counter-
+# extension plans (fading the extreme) and non-expanded states are
+# unaffected. Score, weights and geometry are untouched. The edge threshold
+# is a user-decreed risk control, NOT a tuned parameter — do not "optimize"
+# it under §7.3.
+VOL_CHASE_RANGE_EDGE = 0.90
+
 # Weighted components only. Removed at weight 0 after consistent negative
 # attribution across calibration rounds (round 12b cleanup): fvg, sweep,
 # chart_pat, candle, extension — see module docstring.
@@ -365,7 +379,7 @@ def build_summary(
         bias=bias, score=score, price=price, smc=smc, atr=atr,
         buy_pools=buy_pools, sell_pools=sell_pools, pd_zone=pd_zone,
         high_confidence=high_confidence, confidence_dir=confidence_dir,
-        interval=interval,
+        interval=interval, volatility=volatility,
     )
 
     return {
@@ -383,7 +397,7 @@ def build_summary(
 def _build_trade_plan(*, bias: str, score: int, price: float, smc: dict, atr: float | None,
                       buy_pools: list, sell_pools: list, pd_zone: dict,
                       high_confidence: bool = False, confidence_dir: str | None = None,
-                      interval: str | None = None) -> dict | None:
+                      interval: str | None = None, volatility: dict | None = None) -> dict | None:
     """Executable setup; geometry per interval, see PLAN_GEOMETRY and the
     module docstring for the walk-forward validation behind each."""
     if atr is None or atr <= 0:
@@ -396,6 +410,18 @@ def _build_trade_plan(*, bias: str, score: int, price: float, smc: dict, atr: fl
         long = score > 0
     else:
         return None
+
+    # Round 56 user decree (see VOL_CHASE_RANGE_EDGE): volatility-extreme
+    # chase interception — suppress the plan entirely when it would CHASE a
+    # parabolic extreme in an expanded volatility state (no card / no push /
+    # no executor order). Counter-extension plans stay eligible.
+    if volatility and volatility.get("state") == "expanded":
+        pd_pct = pd_zone.get("pct")
+        if pd_pct is not None and (
+            (long and pd_pct >= VOL_CHASE_RANGE_EDGE)
+            or (not long and pd_pct <= 1.0 - VOL_CHASE_RANGE_EDGE)
+        ):
+            return None
 
     depth, stopw, be_frac, tgt_r, texit, trail, fill_bars = PLAN_GEOMETRY.get(
         interval or PLAN_DEFAULT_INTERVAL, PLAN_GEOMETRY[PLAN_DEFAULT_INTERVAL])

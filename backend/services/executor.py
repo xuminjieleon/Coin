@@ -1472,7 +1472,7 @@ async def test_connection() -> dict:
         usdt = None
         for item in balance or []:
             if item.get("asset") == "USDT":
-                usdt = float(item.get("totalWalletBalance") or 0)
+                usdt = float(item.get("balance") or 0)
                 break
         dual = await binance_trade.position_mode()
         return {"ok": True, "mode": _mode, "usdtWallet": usdt,

@@ -160,6 +160,7 @@ async def _request(method: str, path: str, query: str) -> httpx.Response:
     Transport failures / 451 / 403 mark the route down and try the next;
     other statuses return as-is (the caller interprets the API body)."""
     url = f"{_base}{path}"
+    headers = {"X-MBX-APIKEY": _key} if _key else None
     last_exc: Exception | None = None
 
     for route in ("direct", "proxy"):
@@ -167,12 +168,12 @@ async def _request(method: str, path: str, query: str) -> httpx.Response:
             continue
         try:
             if route == "direct":
-                resp = await _direct().request(method, f"{url}?{query}")
+                resp = await _direct().request(method, f"{url}?{query}", headers=headers)
             else:
                 client = await _proxied()
                 if client is None:
                     continue
-                resp = await client.request(method, f"{url}?{query}")
+                resp = await client.request(method, f"{url}?{query}", headers=headers)
         except httpx.TransportError as exc:
             # Never blind-retry a mutating request whose delivery is
             # ambiguous (Read/WriteTimeout after send): a duplicated order
@@ -192,7 +193,7 @@ async def _request(method: str, path: str, query: str) -> httpx.Response:
                                        limits=httpx.Limits(keepalive_expiry=_POOL_KEEPALIVE))
             )
             try:
-                resp = await fresh.request(method, f"{url}?{query}")
+                resp = await fresh.request(method, f"{url}?{query}", headers=headers)
             except httpx.TransportError as exc2:
                 await fresh.aclose()
                 connect2 = isinstance(exc2, (httpx.ConnectError, httpx.ConnectTimeout))
@@ -260,7 +261,10 @@ def _raise_api_error(resp: httpx.Response, data: Any) -> None:
     if resp.is_success and not (isinstance(data, dict) and "code" in data and "msg" in data):
         return
     if isinstance(data, dict) and "code" in data and "msg" in data:
-        raise TradeError(int(data["code"]), str(data["msg"]))
+        code = data.get("code")
+        if isinstance(code, int) and code < 0:
+            raise TradeError(int(code), str(data["msg"]))
+        return  # code 200/0 = success (e.g. marginType returns {"code":200,"msg":"success"})
     raise TradeError(-1000, f"HTTP {resp.status_code}: {str(data)[:200]}")
 
 
@@ -357,7 +361,7 @@ async def usdt_equity() -> float | None:
     data = await _signed("GET", "/fapi/v2/balance", {})
     for item in data or []:
         if item.get("asset") == "USDT":
-            return float(item.get("totalWalletBalance") or 0.0)
+            return float(item.get("balance") or 0.0)
     return None
 
 
