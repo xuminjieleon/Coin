@@ -13,7 +13,15 @@
     "SUIUSDT",
     "LTCUSDT",
     "LINKUSDT",
-    "ADAUSDT"
+    "ADAUSDT",
+    "AAVEUSDT",
+    "NEARUSDT",
+    "AVAXUSDT",
+    "XLMUSDT",
+    "BCHUSDT",
+    "FILUSDT",
+    "UNIUSDT",
+    "ARBUSDT"
   ],
   "intervals": [
     "1h",

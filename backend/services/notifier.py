@@ -50,6 +50,16 @@ Design (agreed with the user, 2026-08-27):
   trailR*risk)) instead of the old "trail activation" price, which was below
   the actual arming level on 4h/1d and required the user to compute
   trailR x risk by hand.
+- Message format (2026-09-02, round 53 — user picked "structured color
+  blocks" after a live three-format preview on their phone; WeCom bot
+  markdown has no real tables): events message = gray count summary line
+  (N 新 · N 转向 · N 改单 · N 消失) + per-event blocks — 【事件】symbol interval
+  + colored direction word (green 做多 / orange-red 做空), plan lines inside
+  quote blocks ("> " prefix), compact two-column rows (入场 / 止盈｜止损 /
+  减半保本 / 跟踪), amend events carry old prices inline (（旧 X）), 消失/转向
+  carry a red cancel-order warning line with the resting prices. Brief mode
+  keeps the ---------- separators + idle list with the same block styling.
+  The <font> color tags are stripped for non-wecom channels (pushplus).
 - Symbols whose analysis FAILED are excluded from fingerprint comparison
   (a network hiccup must not push a fake "plan gone").
 - Config + state persist to backend/data/notify.json (gitignored: token).
@@ -58,7 +68,9 @@ Design (agreed with the user, 2026-08-27):
 import asyncio
 import json
 import math
+import re
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -166,6 +178,23 @@ def _set_error(msg: str) -> None:
 
 # ---------------------------------------------------------------- formatting
 
+# 事件色块格式（2026-09-02 第五十三轮改版，用户手机预览三种候选后拍板"结构化色块"）：
+# 企微机器人 markdown 支持集（粗体/引用/字体颜色）内的元素——真表格不支持；
+# 颜色标签在非 wecom 通道（pushplus markdown）发送前剥除。
+_FONT_RE = re.compile(r"</?font[^>]*>")
+_WECOM_LONG = '<font color="info">做多</font>'
+_WECOM_SHORT = '<font color="warning">做空</font>'
+
+
+def _dir_word(direction: str) -> str:
+    """带颜色的方向词（wecom 绿=做多 / 橙红=做空）。"""
+    return _WECOM_LONG if direction == "long" else _WECOM_SHORT
+
+
+def _quote(lines: list[str]) -> list[str]:
+    return ["> " + l for l in lines]
+
+
 def _fmt(p: float) -> str:
     if p >= 1000:
         return f"{p:,.0f}"
@@ -204,35 +233,92 @@ def _trail_dist(plan: dict) -> float | None:
     return trail * risk
 
 
-def _plan_lines(plan: dict) -> list[str]:
-    """Multi-line block for one plan (events mode). Trail semantics follow
-    journal_store.replay_plan: at beTrigger half exits and the stop becomes
-    max(entry, MFE - trailR*risk) — all printed as concrete prices."""
-    long = plan["direction"] == "long"
-    lines = [
-        f"入场 {_fmt(plan['entry'])}（回踩限价）",
-    ]
+def _exit_lines(plan: dict, old_stop: float | None = None) -> list[str]:
+    """入场之后的计划行（_plan_lines/_amend_lines 共用）：
+    止盈(若有)｜止损 → 减半保本 → 跟踪(若跟踪族)。old_stop 提供时在止损后附（旧 X）。
+    第二十八/五十二轮语义保留：止盈先于止损、跟踪族直接打印跟踪距离与
+    半仓离场时的具体止损位、只含实际价格。"""
+    lines = []
+    stop_txt = f"止损 {_fmt(plan['stop'])}"
+    if old_stop is not None:
+        stop_txt += f"（旧 {_fmt(old_stop)}）"
     if plan.get("target1") is not None:
-        lines.append(f"止盈 {_fmt(plan['target1'])}")
-    lines.append(f"止损 {_fmt(plan['stop'])}")
+        lines.append(f"止盈 {_fmt(plan['target1'])} ｜ {stop_txt}")
+    else:
+        lines.append(stop_txt)
+    be = f"{_fmt(plan['beTrigger'])} 减半保本"
     dist = _trail_dist(plan)
     if dist is None:
-        lines.append(f"{_fmt(plan['beTrigger'])} 减半保本（半仓止盈，此后止损提到入场价）")
+        lines.append(f"{be}（半仓止盈，此后止损提到入场价）")
     else:
-        lines.append(f"{_fmt(plan['beTrigger'])} 减半保本（半仓止盈，此后启用跟踪止损）")
-        if long:
+        lines.append(f"{be}（半仓止盈，此后启用跟踪）")
+        if plan["direction"] == "long":
             z = max(plan["entry"], plan["beTrigger"] - dist)
-            lines.append(f"跟踪止损 = 最高价−{_fmt(dist)}（半仓离场时止损设 {_fmt(z)}，只上移，不低于入场价）")
+            lines.append(f"跟踪 = 最高价 − {_fmt(dist)}"
+                         f"（半仓离场时止损先设 {_fmt(z)}，只上移、不低于入场价）")
         else:
             z = min(plan["entry"], plan["beTrigger"] + dist)
-            lines.append(f"跟踪止损 = 最低价+{_fmt(dist)}（半仓离场时止损设 {_fmt(z)}，只下移，不高于入场价）")
+            lines.append(f"跟踪 = 最低价 + {_fmt(dist)}"
+                         f"（半仓离场时止损先设 {_fmt(z)}，只下移、不高于入场价）")
     return lines
 
 
+def _plan_lines(plan: dict) -> list[str]:
+    """单源计划行（events/brief 共用）：入场 → 止盈(若有)｜止损 → 半保 → 跟踪。"""
+    return [f"入场 {_fmt(plan['entry'])}（回踩限价）"] + _exit_lines(plan)
+
+
+def _amend_lines(plan: dict, old: dict) -> list[str]:
+    """改单块行：入场（旧 X）→ 止盈(若有)｜止损（旧 Y）→ 半保 → 跟踪。"""
+    head = f"入场 {_fmt(plan['entry'])}"
+    if old.get("entry") is not None:
+        head += f"（旧 {_fmt(old['entry'])}）"
+    return [head] + _exit_lines(plan, old.get("stop"))
+
+
 def _plan_block(sym: str, itv: str, plan: dict) -> str:
-    """【sym itv direction】 header + concrete-price lines (one plan block)."""
-    head = f"【{sym} {itv} {'做多' if plan['direction'] == 'long' else '做空'}】"
-    return head + "\n" + "\n".join(_plan_lines(plan))
+    """【sym itv 方向】 header + 引用块计划行（brief 模式用）。"""
+    head = f"【{sym} {itv} {_dir_word(plan['direction'])}】"
+    return head + "\n" + "\n".join(_quote(_plan_lines(plan)))
+
+
+def _events_content(events: list) -> str:
+    """events 模式正文（第五十三轮格式）：灰色计数摘要行 + 逐事件色块。
+    事件块 = 【事件】币 周期 + 颜色方向词 + 引用块（> 前缀）计划行；
+    消失/转向带红色撤单警示行与原挂单价。"""
+    cnt = Counter(kind for kind, *_ in events)
+    summary = " · ".join(f"{cnt[k]} {k}" for k in ("新", "转向", "改单", "消失") if cnt.get(k))
+    parts = [f'<font color="comment">{summary}</font>'] if summary else []
+    for kind, sym, itv, plan, prev in events:
+        tag = f"{sym} {itv} "
+        if kind == "消失":
+            pd_ = (prev or {}).get("direction")
+            d = "多头" if pd_ == "long" else "空头"
+            side = "买入" if pd_ == "long" else "卖出"
+            warn = (f'> <font color="warning">⚠️ 立即撤销该{side}限价挂单</font>'
+                    f"（若已成交请检查仓位止损）")
+            px = ""
+            if (prev or {}).get("entry") is not None:
+                px = f"\n> 原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}"
+            parts.append(f"【消失】{tag}{d}计划已消失\n{warn}{px}")
+            continue
+        if kind == "改单":
+            head = f"【改单】{tag}{_dir_word(plan['direction'])}（挂单价格漂移，请改单）"
+            parts.append(head + "\n" + "\n".join(_quote(_amend_lines(plan, prev or {}))))
+            continue
+        head = f"【{kind}】{tag}"
+        lines = _quote(_plan_lines(plan))
+        if kind == "转向":
+            pd_ = (prev or {}).get("direction")
+            old_side = "买入" if pd_ == "long" else "卖出"
+            head += f'<font color="comment">{"做多" if pd_ == "long" else "做空"}</font> → '
+            old_txt = ""
+            if (prev or {}).get("entry") is not None:
+                old_txt = f"：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}"
+            lines = [f'> <font color="warning">⚠️ 先撤销原{old_side}挂单</font>{old_txt}'] + lines
+        head += _dir_word(plan["direction"])
+        parts.append(head + "\n" + "\n".join(lines))
+    return "\n\n".join(parts)
 
 
 def _brief_content(intervals: list[str], symbols: list[str],
@@ -302,7 +388,11 @@ def _credential() -> str:
 
 
 async def _send(title: str, content: str) -> tuple[bool, str]:
-    return await notify.send_by_channel(_cfg["channel"], _credential(), title, content)
+    channel = _cfg["channel"]
+    if channel != "wecom":
+        # 颜色标签为企微 markdown 方言；pushplus 等通道剥除后按纯文本/markdown 发送
+        content = _FONT_RE.sub("", content)
+    return await notify.send_by_channel(channel, _credential(), title, content)
 
 
 # ---------------------------------------------------------------- analysis
@@ -472,45 +562,7 @@ async def _run_once(allow_push: bool) -> None:
             content = "\n".join(lines)
         else:
             title = f"CoinLens 信号 {_now_label()}"
-            blocks: list[str] = []
-            for kind, sym, itv, plan, prev in events:
-                tag = f"{sym} {itv} "
-                if kind == "消失":
-                    # prev = {"direction", "entry"?, "stop"?}（上次推送的挂单价）
-                    pd_ = (prev or {}).get("direction")
-                    d = "多头" if pd_ == "long" else "空头"
-                    side = "买入" if pd_ == "long" else "卖出"
-                    px = ""
-                    if (prev or {}).get("entry") is not None:
-                        px = f"\n原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}"
-                    blocks.append(
-                        f"【消失】{tag}{d}计划已消失{px}\n"
-                        f"⚠️ 立即撤销该{side}限价挂单（若已成交请检查仓位止损）")
-                    continue
-                if kind == "改单":
-                    old = prev or {}
-                    head = f"【改单】{tag}{'做多' if plan['direction'] == 'long' else '做空'}（挂单价格漂移，请改单）"
-                    drift_lines = []
-                    if old.get("entry") is not None:
-                        drift_lines.append(f"旧入场 {_fmt(old['entry'])} → 新入场 {_fmt(plan['entry'])}")
-                    if old.get("stop") is not None:
-                        drift_lines.append(f"旧止损 {_fmt(old['stop'])} → 新止损 {_fmt(plan['stop'])}")
-                    blocks.append(head + "\n" + "\n".join(drift_lines) + "\n" + "\n".join(_plan_lines(plan)))
-                    continue
-                head = f"【{kind}】{tag}"
-                extra = ""
-                if kind == "转向":
-                    pd_ = (prev or {}).get("direction")
-                    head += f"{'做多' if pd_ == 'long' else '做空'} → "
-                    # 转向也意味着旧方向挂单必须撤销；带上原挂单价方便定位
-                    old_side = "买入" if pd_ == "long" else "卖出"
-                    extra = ""
-                    if (prev or {}).get("entry") is not None:
-                        extra = f"原挂单：入场 {_fmt(prev['entry'])} / 止损 {_fmt(prev['stop'])}\n"
-                    extra += f"⚠️ 先撤销原{old_side}挂单，再按新方向下单\n"
-                head += "做多" if plan["direction"] == "long" else "做空"
-                blocks.append(head + "\n" + extra + "\n".join(_plan_lines(plan)))
-            content = "\n----------\n".join(blocks)
+            content = _events_content(events)
     else:  # brief
         title = f"CoinLens 每小时提示 {_now_label()}"
         content = _brief_content(intervals, symbols, plans, failed)
