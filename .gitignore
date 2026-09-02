@@ -16,6 +16,7 @@ backend/tests/_profit2_oos_cache_*.pkl
 backend/tests/_ltc_cache_*.pkl
 backend/tests/_t10_cache_*.pkl
 backend/tests/_5y_cache_*.pkl
+backend/tests/_2y_cache_*.pkl
 backend/tests/_ashare_rec_*.pkl
 backend/tests/_us_rec_*.pkl
 backend/tests/_usc_rec_*.pkl
