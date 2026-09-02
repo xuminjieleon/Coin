@@ -174,6 +174,25 @@ async def _fapi_via_proxy(path: str, params: dict | None) -> Any:
         return None
 
 
+def _strip_spot_taker_buy(klines: list) -> list:
+    """Neutralize taker-buy volume (index 9) on spot-mirror klines.
+
+    The mirror (data-api.binance.vision /api/v3/klines) returns SPOT taker-buy
+    volume, a different semantic from the FUTURES taker-buy the CVD component
+    is designed around (fapi /fapi/v1/klines). Mixing the two drifts the CVD
+    signal — worst at the exact extremes where CVD divergence matters most
+    (spot FOMO vs futures distribution run opposite). Strip it so CVD degrades
+    to null instead of silently switching semantics (DEVLOG 第五十八轮).
+    """
+    out = []
+    for k in klines:
+        k = list(k)
+        if len(k) > 9:
+            k[9] = None
+        out.append(k)
+    return out
+
+
 async def _get(path: str, params: dict | None = None, cache_ttl: float = 0) -> Any:
     url = f"{BINANCE_FAPI}{path}"
     cache_key = f"{url}?{params}" if params else url
@@ -206,6 +225,13 @@ async def _get(path: str, params: dict | None = None, cache_ttl: float = 0) -> A
             try:
                 data = await _fetch(f"{BINANCE_SPOT_MIRROR}{fallback}", params, _FALLBACK_TIMEOUT)
                 _mark_host_ok(BINANCE_SPOT_MIRROR)
+                # The mirror serves SPOT klines; its taker-buy volume (index 9)
+                # is a different semantic from the futures taker-buy CVD is
+                # built on. Strip it so CVD degrades to null instead of
+                # silently switching口径 (DEVLOG 第五十八轮; user decree
+                # 2026-09-02: CVD uses futures takerBuy only).
+                if path == "/fapi/v1/klines":
+                    data = _strip_spot_taker_buy(data)
             except Exception as exc:  # noqa: BLE001
                 _mark_host_down(BINANCE_SPOT_MIRROR)
                 if primary_err is not None:

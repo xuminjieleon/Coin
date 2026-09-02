@@ -1,5 +1,5 @@
 {
-  "enabled": false,
+  "enabled": true,
   "mode": "events",
   "channel": "wecom",
   "symbols": [
@@ -29,6 +29,33 @@
   ],
   "token": "",
   "wecomKey": "c6034045-2131-4f23-9087-36c6385d4d75",
-  "seeded": false,
-  "seenPlans": {}
+  "seeded": true,
+  "seenPlans": {
+    "BTCUSDT|1h": "short",
+    "SOLUSDT|1h": "short",
+    "XRPUSDT|1h": "short",
+    "DOGEUSDT|1h": "short",
+    "LTCUSDT|1h": "short",
+    "LINKUSDT|1h": "short",
+    "ADAUSDT|1h": "long",
+    "AAVEUSDT|1h": "short",
+    "NEARUSDT|1h": "short",
+    "AVAXUSDT|1h": "short",
+    "FILUSDT|1h": "short",
+    "UNIUSDT|1h": "short",
+    "ARBUSDT|1h": "short",
+    "XRPUSDT|4h": "short",
+    "DOGEUSDT|4h": "short",
+    "SUIUSDT|4h": "short",
+    "LTCUSDT|4h": "short",
+    "AAVEUSDT|4h": "short",
+    "NEARUSDT|4h": "short",
+    "AVAXUSDT|4h": "short",
+    "BCHUSDT|4h": "long",
+    "FILUSDT|4h": "short",
+    "UNIUSDT|4h": "long",
+    "ARBUSDT|4h": "short"
+  },
+  "pushedPlans": {},
+  "heartbeat": true
 }
