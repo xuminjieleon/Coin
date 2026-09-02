@@ -11,7 +11,9 @@
     "ZECUSDT",
     "DOGEUSDT",
     "SUIUSDT",
-    "LTCUSDT"
+    "LTCUSDT",
+    "LINKUSDT",
+    "ADAUSDT"
   ],
   "intervals": [
     "1h",

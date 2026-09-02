@@ -14,7 +14,7 @@ class NotifyConfig(BaseModel):
     mode: str | None = None
     channel: str | None = None
     heartbeat: bool | None = None
-    symbols: list[str] | None = Field(default=None, min_length=1, max_length=10)
+    symbols: list[str] | None = Field(default=None, min_length=1, max_length=20)
     intervals: list[str] | None = Field(default=None, min_length=1, max_length=4)
     interval: str | None = None  # legacy single-interval form -> intervals=[x]
     token: str | None = Field(default=None, min_length=1, max_length=64)

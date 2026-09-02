@@ -211,10 +211,10 @@ def _plan_lines(plan: dict) -> list[str]:
     long = plan["direction"] == "long"
     lines = [
         f"入场 {_fmt(plan['entry'])}（回踩限价）",
-        f"止损 {_fmt(plan['stop'])}",
     ]
     if plan.get("target1") is not None:
         lines.append(f"止盈 {_fmt(plan['target1'])}")
+    lines.append(f"止损 {_fmt(plan['stop'])}")
     dist = _trail_dist(plan)
     if dist is None:
         lines.append(f"{_fmt(plan['beTrigger'])} 减半保本（半仓止盈，此后止损提到入场价）")
