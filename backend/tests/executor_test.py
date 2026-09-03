@@ -527,6 +527,46 @@ async def test_replay_trail_parity():
           str(res))
 
 
+async def test_place_failed_circuit_breaker():
+    print("T14 place_failed 同 bar 熔断（2026-09-03 BCH -4120 连挂 21 次事故）")
+    reset_env(["BTCUSDT"], ["1h"])
+    set_plan("BTCUSDT", "1h", entry=100.0, stop=98.0)
+    FEED["BTCUSDT"] = [bar(5, 104.0, 104.0, 103.0, 103.5)]
+    orig_place = executor._broker.place
+
+    async def broken_stop(spec):
+        if spec["otype"] == "STOP_MARKET":
+            raise binance_trade.TradeError(-4120, "Order type not supported")
+        return await orig_place(spec)
+
+    executor._broker.place = broken_stop
+    await executor._plan_tick()
+    pos = one_pos("BTCUSDT|1h")
+    check("首挂 place_failed 已落 closed 行",
+          pos is None and executor._db().execute(
+              "SELECT COUNT(*) FROM positions WHERE key='BTCUSDT|1h' "
+              "AND exit_reason='place_failed'").fetchone()[0] == 1)
+
+    await executor._plan_tick()  # same bar, same plan -> must be suppressed
+    n = executor._db().execute(
+        "SELECT COUNT(*) FROM positions WHERE key='BTCUSDT|1h'").fetchone()[0]
+    check("同 bar 重挂被熔断（仍 1 行）", n == 1, f"rows={n}")
+    check("熔断警告已记", any("熔断" in w for w in executor._warned),
+          str(executor._warned))
+
+    executor._broker.place = orig_place
+    # simulate next bar: backdate the failed row beyond the window anchor
+    step = 3_600_000
+    old_anchor = executor.last_closed_open(executor._now_ms(), "1h") - step
+    executor._db().execute(
+        "UPDATE positions SET created_at=? WHERE key='BTCUSDT|1h'", (old_anchor,))
+    executor._db().commit()
+    await executor._plan_tick()
+    pos = one_pos("BTCUSDT|1h")
+    check("下一 bar 窗口后允许重挂", pos is not None
+          and pos["state"] == "pending", str(pos))
+
+
 async def main():
     # shared closed-bar analysis (round 55): ONE stub point for notifier+executor
     context.run_analysis = mock_run_analysis
@@ -547,6 +587,7 @@ async def main():
     await test_place_probe_recovery()
     await test_live_equity_refusal()
     await test_replay_trail_parity()
+    await test_place_failed_circuit_breaker()
     print(f"\nALL PASS ({PASS} checks)")
 
 

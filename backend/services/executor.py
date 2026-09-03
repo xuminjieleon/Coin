@@ -224,6 +224,33 @@ def _active_positions() -> list[dict]:
     return [_row_dict(r) for r in rows]
 
 
+def _place_failed_this_bar(sym: str, itv: str, direction: str,
+                           entry: float, stop: float, tick: float) -> bool:
+    """Circuit breaker: an identical placement (same key+direction+tick-rounded
+    entry/stop) already failed inside the CURRENT plan bar's window → do not
+    re-attempt until the next bar. Root cause of the 2026-09-03 incident: a
+    -4120 (STOP_MARKET not on this endpoint) rejection row is state='closed',
+    so _active_positions never sees it and _plan_tick re-created the same
+    pending row every hour — 21 identical failures for BCH in one day.
+
+    Window anchor = last_closed_open(now, itv): the plan being placed was
+    computed at that as-of bar and stays identical until the bar closes, so
+    any failure stamped >= that anchor belongs to the same placement."""
+    anchor = last_closed_open(_now_ms(), itv)
+    tol = max(tick, 1e-12) / 2.0
+    with _lock:
+        cur = _db().execute(
+            "SELECT entry, stop FROM positions WHERE key=? AND state='closed' "
+            "AND exit_reason='place_failed' AND direction=? AND created_at>=? "
+            "ORDER BY id DESC LIMIT 1",
+            (f"{sym}|{itv}", direction, anchor),
+        )
+        row = cur.fetchone()
+    if row is None:
+        return False
+    return abs(row[0] - entry) <= tol and abs(row[1] - stop) <= tol
+
+
 def _upd(pid: int, **fields) -> None:
     if not fields:
         return
@@ -862,6 +889,10 @@ async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
         return False
     entry = _round_tick(plan["entry"], filters["tick"])
     stop = _round_tick(plan["stop"], filters["tick"])
+    if _place_failed_this_bar(sym, itv, plan["direction"], entry, stop,
+                              filters["tick"]):
+        _warn(f"{sym} {itv} 相同挂单本 bar 已失败过，熔断至下一 bar")
+        return False
     qty = min(qty, _floor_step(
         equity * float(_cfg.get("maxNotionalPctPer") or 30) / 100.0 / entry,
         filters["step"]))

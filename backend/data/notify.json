@@ -31,31 +31,118 @@
   "wecomKey": "c6034045-2131-4f23-9087-36c6385d4d75",
   "seeded": true,
   "seenPlans": {
-    "BTCUSDT|1h": "short",
-    "SOLUSDT|1h": "short",
-    "XRPUSDT|1h": "short",
-    "DOGEUSDT|1h": "short",
-    "LTCUSDT|1h": "short",
-    "LINKUSDT|1h": "short",
-    "ADAUSDT|1h": "long",
-    "AAVEUSDT|1h": "short",
-    "NEARUSDT|1h": "short",
-    "AVAXUSDT|1h": "short",
-    "FILUSDT|1h": "short",
-    "UNIUSDT|1h": "short",
-    "ARBUSDT|1h": "short",
-    "XRPUSDT|4h": "short",
+    "ARBUSDT|1h": "long",
     "DOGEUSDT|4h": "short",
-    "SUIUSDT|4h": "short",
-    "LTCUSDT|4h": "short",
-    "AAVEUSDT|4h": "short",
-    "NEARUSDT|4h": "short",
-    "AVAXUSDT|4h": "short",
+    "LTCUSDT|4h": "long",
+    "AAVEUSDT|4h": "long",
+    "NEARUSDT|4h": "long",
     "BCHUSDT|4h": "long",
-    "FILUSDT|4h": "short",
+    "FILUSDT|4h": "long",
     "UNIUSDT|4h": "long",
-    "ARBUSDT|4h": "short"
+    "ARBUSDT|4h": "long",
+    "ADAUSDT|4h": "long",
+    "SUIUSDT|1h": "long",
+    "ETHUSDT|4h": "short",
+    "BNBUSDT|4h": "long",
+    "ADAUSDT|1h": "long",
+    "SUIUSDT|4h": "long",
+    "BNBUSDT|1h": "long",
+    "LTCUSDT|1h": "long",
+    "LINKUSDT|4h": "short",
+    "UNIUSDT|1h": "long",
+    "ZECUSDT|1h": "long"
   },
-  "pushedPlans": {},
+  "pushedPlans": {
+    "ARBUSDT|1h": {
+      "entry": 0.13294127,
+      "stop": 0.12430635,
+      "direction": "long"
+    },
+    "AAVEUSDT|4h": {
+      "entry": 127.74751999,
+      "stop": 124.65087999,
+      "direction": "long"
+    },
+    "NEARUSDT|4h": {
+      "entry": 1.84696853,
+      "stop": 1.79225989,
+      "direction": "long"
+    },
+    "BCHUSDT|4h": {
+      "entry": 246.83272641,
+      "stop": 242.07636163,
+      "direction": "long"
+    },
+    "FILUSDT|4h": {
+      "entry": 0.77857953,
+      "stop": 0.7520189,
+      "direction": "long"
+    },
+    "ARBUSDT|4h": {
+      "entry": 0.13201011,
+      "stop": 0.12482359,
+      "direction": "long"
+    },
+    "ADAUSDT|4h": {
+      "entry": 0.20345298,
+      "stop": 0.19885695,
+      "direction": "long"
+    },
+    "SUIUSDT|1h": {
+      "entry": 0.77975932,
+      "stop": 0.75639661,
+      "direction": "long"
+    },
+    "ETHUSDT|4h": {
+      "entry": 2430.15000375,
+      "stop": 2465.95000876,
+      "direction": "short"
+    },
+    "BNBUSDT|4h": {
+      "entry": 705.70014208,
+      "stop": 698.06033153,
+      "direction": "long"
+    },
+    "LTCUSDT|4h": {
+      "entry": 50.36212151,
+      "stop": 49.59161685,
+      "direction": "long"
+    },
+    "ADAUSDT|1h": {
+      "entry": 0.21558691,
+      "stop": 0.20953453,
+      "direction": "long"
+    },
+    "SUIUSDT|4h": {
+      "entry": 0.75255366,
+      "stop": 0.73289188,
+      "direction": "long"
+    },
+    "BNBUSDT|1h": {
+      "entry": 719.83190435,
+      "stop": 710.11952174,
+      "direction": "long"
+    },
+    "LTCUSDT|1h": {
+      "entry": 50.7366762,
+      "stop": 49.92338099,
+      "direction": "long"
+    },
+    "LINKUSDT|4h": {
+      "entry": 11.43307018,
+      "stop": 11.64783041,
+      "direction": "short"
+    },
+    "UNIUSDT|1h": {
+      "entry": 6.08059703,
+      "stop": 5.79098514,
+      "direction": "long"
+    },
+    "ZECUSDT|1h": {
+      "entry": 866.69666626,
+      "stop": 843.40333129,
+      "direction": "long"
+    }
+  },
   "heartbeat": true
 }
