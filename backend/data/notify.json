@@ -31,46 +31,50 @@
   "wecomKey": "c6034045-2131-4f23-9087-36c6385d4d75",
   "seeded": true,
   "seenPlans": {
-    "ARBUSDT|1h": "long",
-    "DOGEUSDT|4h": "short",
-    "LTCUSDT|4h": "long",
+    "ARBUSDT|1h": "short",
+    "DOGEUSDT|4h": "long",
     "AAVEUSDT|4h": "long",
     "NEARUSDT|4h": "long",
     "BCHUSDT|4h": "long",
     "FILUSDT|4h": "long",
     "UNIUSDT|4h": "long",
     "ARBUSDT|4h": "long",
-    "ADAUSDT|4h": "long",
     "SUIUSDT|1h": "long",
-    "ETHUSDT|4h": "short",
-    "BNBUSDT|4h": "long",
+    "ETHUSDT|4h": "long",
     "ADAUSDT|1h": "long",
-    "SUIUSDT|4h": "long",
+    "SUIUSDT|4h": "short",
     "BNBUSDT|1h": "long",
     "LTCUSDT|1h": "long",
-    "LINKUSDT|4h": "short",
-    "UNIUSDT|1h": "long",
-    "ZECUSDT|1h": "long"
+    "LINKUSDT|4h": "long",
+    "UNIUSDT|1h": "short",
+    "ZECUSDT|1h": "long",
+    "SOLUSDT|1h": "long",
+    "XRPUSDT|1h": "short",
+    "AAVEUSDT|1h": "short",
+    "NEARUSDT|1h": "short",
+    "FILUSDT|1h": "short",
+    "ZECUSDT|4h": "long",
+    "AVAXUSDT|4h": "short"
   },
   "pushedPlans": {
     "ARBUSDT|1h": {
-      "entry": 0.13294127,
-      "stop": 0.12430635,
-      "direction": "long"
+      "entry": 0.13442647,
+      "stop": 0.14373234,
+      "direction": "short"
     },
     "AAVEUSDT|4h": {
-      "entry": 127.74751999,
-      "stop": 124.65087999,
+      "entry": 131.73284325,
+      "stop": 128.49663426,
       "direction": "long"
     },
     "NEARUSDT|4h": {
-      "entry": 1.84696853,
-      "stop": 1.79225989,
+      "entry": 1.94528515,
+      "stop": 1.88833202,
       "direction": "long"
     },
     "BCHUSDT|4h": {
-      "entry": 246.83272641,
-      "stop": 242.07636163,
+      "entry": 254.8,
+      "stop": 249.69323649,
       "direction": "long"
     },
     "FILUSDT|4h": {
@@ -79,13 +83,8 @@
       "direction": "long"
     },
     "ARBUSDT|4h": {
-      "entry": 0.13201011,
-      "stop": 0.12482359,
-      "direction": "long"
-    },
-    "ADAUSDT|4h": {
-      "entry": 0.20345298,
-      "stop": 0.19885695,
+      "entry": 0.12655012,
+      "stop": 0.11915027,
       "direction": "long"
     },
     "SUIUSDT|1h": {
@@ -94,54 +93,84 @@
       "direction": "long"
     },
     "ETHUSDT|4h": {
-      "entry": 2430.15000375,
-      "stop": 2465.95000876,
-      "direction": "short"
-    },
-    "BNBUSDT|4h": {
-      "entry": 705.70014208,
-      "stop": 698.06033153,
-      "direction": "long"
-    },
-    "LTCUSDT|4h": {
-      "entry": 50.36212151,
-      "stop": 49.59161685,
+      "entry": 2462.29407498,
+      "stop": 2422.61950829,
       "direction": "long"
     },
     "ADAUSDT|1h": {
-      "entry": 0.21558691,
-      "stop": 0.20953453,
+      "entry": 0.21896385,
+      "stop": 0.21241924,
       "direction": "long"
     },
     "SUIUSDT|4h": {
-      "entry": 0.75255366,
-      "stop": 0.73289188,
-      "direction": "long"
+      "entry": 0.80431342,
+      "stop": 0.82486464,
+      "direction": "short"
     },
     "BNBUSDT|1h": {
-      "entry": 719.83190435,
-      "stop": 710.11952174,
+      "entry": 725.66907321,
+      "stop": 715.02536606,
       "direction": "long"
     },
     "LTCUSDT|1h": {
-      "entry": 50.7366762,
-      "stop": 49.92338099,
+      "entry": 51.0769182,
+      "stop": 50.26459099,
       "direction": "long"
     },
     "LINKUSDT|4h": {
-      "entry": 11.43307018,
-      "stop": 11.64783041,
-      "direction": "short"
+      "entry": 11.59991698,
+      "stop": 11.35713962,
+      "direction": "long"
     },
     "UNIUSDT|1h": {
-      "entry": 6.08059703,
-      "stop": 5.79098514,
-      "direction": "long"
+      "entry": 6.29167024,
+      "stop": 6.59435122,
+      "direction": "short"
     },
     "ZECUSDT|1h": {
-      "entry": 866.69666626,
-      "stop": 843.40333129,
+      "entry": 945.55930524,
+      "stop": 908.43652621,
       "direction": "long"
+    },
+    "SOLUSDT|1h": {
+      "entry": 104.55227813,
+      "stop": 102.20139066,
+      "direction": "long"
+    },
+    "XRPUSDT|1h": {
+      "entry": 1.47324996,
+      "stop": 1.50984979,
+      "direction": "short"
+    },
+    "AAVEUSDT|1h": {
+      "entry": 135.05804609,
+      "stop": 138.65023045,
+      "direction": "short"
+    },
+    "NEARUSDT|1h": {
+      "entry": 1.993,
+      "stop": 2.0542777,
+      "direction": "short"
+    },
+    "FILUSDT|1h": {
+      "entry": 0.80655796,
+      "stop": 0.83758982,
+      "direction": "short"
+    },
+    "ZECUSDT|4h": {
+      "entry": 930.62213708,
+      "stop": 898.33165319,
+      "direction": "long"
+    },
+    "DOGEUSDT|4h": {
+      "entry": 0.08785236,
+      "stop": 0.08606884,
+      "direction": "long"
+    },
+    "AVAXUSDT|4h": {
+      "entry": 7.60308069,
+      "stop": 7.72718827,
+      "direction": "short"
     }
   },
   "heartbeat": true

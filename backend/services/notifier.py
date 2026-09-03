@@ -399,6 +399,85 @@ async def _send(title: str, content: str) -> tuple[bool, str]:
     return await notify.send_by_channel(channel, _credential(), title, content)
 
 
+# 企业微信机器人 markdown 单条上限 4096 字节（2026-09-04 00:05 轮 40058
+# 整条被拒事故）。分段口径：标题随首条（_post_wecom 将标题拼进首行，占量
+# 计入）、按 \n\n 块边界贪心装包、单块超限按字节硬切、条间 0.4s 防限频
+# （机器人 20 条/分钟额度内安全）。上限留余量给标题行与边界。
+_WECOM_LIMIT = 3800
+
+
+def _utf8_len(s: str) -> int:
+    return len(s.encode("utf-8"))
+
+
+def _hard_cut(s: str, limit: int) -> tuple[str, str]:
+    """按 UTF-8 字节硬切 s，切点不破多字节字符。返回 (head, rest)。"""
+    b = s.encode("utf-8")
+    if len(b) <= limit:
+        return s, ""
+    cut = limit
+    while cut > 0 and (b[cut] & 0xC0) == 0x80:
+        cut -= 1
+    return b[:cut].decode("utf-8"), b[cut:].decode("utf-8")
+
+
+def _split_content(title: str, content: str,
+                   limit: int = _WECOM_LIMIT) -> list[str]:
+    """把 (title 拼首行后的) 完整正文按字节上限分段，段边界优先 \n\n。"""
+    full = f"**{title}**\n{content}"  # wecom 发送形态，量按此计
+    if _utf8_len(full) <= limit:
+        return [content]
+    chunks: list[str] = []
+    # 首段可用量要扣掉标题行
+    first_budget = limit - _utf8_len(f"**{title}**\n")
+    blocks = content.split("\n\n")
+    cur = ""
+    budget = first_budget
+    for blk in blocks:
+        piece = blk if not cur else cur + "\n\n" + blk
+        if _utf8_len(piece) <= budget:
+            cur = piece
+            continue
+        # 装不下：先把 cur 收尾
+        if cur:
+            chunks.append(cur)
+            cur = ""
+            budget = limit
+        # 单块自身超限 → 硬切
+        if _utf8_len(blk) > budget:
+            rest = blk
+            while _utf8_len(rest) > budget:
+                head, rest = _hard_cut(rest, budget)
+                chunks.append(head)
+                budget = limit
+            cur = rest
+        else:
+            cur = blk
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+async def _send_chunked(title: str, content: str) -> tuple[bool, str]:
+    """分段发送入口：单条够用走 _send 原路径（行为零变化），超限拆多条
+    连发，首条带标题，返回聚合 (ok, error)。"""
+    chunks = _split_content(title, content)
+    if len(chunks) == 1:
+        return await _send(title, content)
+    channel = _cfg["channel"]
+    if channel != "wecom":
+        content = _FONT_RE.sub("", content)
+        chunks = _split_content(title, content)
+    for i, ch in enumerate(chunks):
+        t = title if i == 0 else f"{title}（{i + 1}/{len(chunks)}）"
+        ok, err = await notify.send_by_channel(channel, _credential(), t, ch)
+        if not ok:
+            return False, f"分段 {i + 1}/{len(chunks)} 失败: {err}"
+        if i + 1 < len(chunks):
+            await asyncio.sleep(0.4)
+    return True, f"分 {len(chunks)} 条发送"
+
+
 # ---------------------------------------------------------------- analysis
 
 async def _safe_analysis(symbol: str, interval: str) -> dict | None:
@@ -558,7 +637,7 @@ async def _run_once(allow_push: bool) -> None:
 
     if not allow_push:
         return
-    ok, error = await _send(title, content)
+    ok, error = await _send_chunked(title, content)
     _record_push(title, ok, error)
     if not ok:
         _set_error(f"push failed: {error}")
