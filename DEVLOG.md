@@ -35,6 +35,33 @@
 - **第 58 轮（09-03）CVD 跨机口径漂移（架构缺陷）**：查清一个跨机方向反转的根因——K 线的"主动买入量"字段（takerBuy）在币安**合约**接口和**现货镜像**接口里是两个数（合约口径 vs 现货口径）；本机 fapi 直连被 DNS 污染但经系统代理可达、走合约口径（正确），另一台降级到现货镜像、把本该有的「bearish 双周期共振→强制做空」反向信号弄丢了（UNI 4h：另一台评分 +27 vs 本机 +50，差 23 精确等于 cvd −14 + cvd_conf −9）。比"K 线漂移"严重一个量级，已登记待办待修。
 - **第 59 轮（09-03）CVD 只用合约 takerBuy（修复 58 轮缺陷）**：用户拍板选项 a——降级到现货镜像时 K 线剥离主动买入量字段、CVD 整个置空，而不是用现货口径硬算。效果：两台机器从此口径一致，fapi 不可达时放弃 CVD 组件也不再用错口径。一个如实边界要记：**这个修复治的是"跨机方向漂移"，拦不住 56 轮那笔 UNI 贴顶追多单**——那笔单的动力在评分（结构 BOS+EMA 多头+Wyckoff markup），三种 CVD 口径（合约/现货/置空）下都产出同一笔多单（entry 6.118/stop 5.875），CVD 在这条路径上既没触发也不够强到反转方向。56 轮的"极值 regime 追多"按用户拍板就是不拦，和本修复是两个独立的病。
 - 一句话：**产品已成型（看盘+计划+推送+复盘+自动执行闭环），策略优势经跨市场验证且参数已冻结；剩下的都是"要不要扩市场"的产品决策。**
+- **第 60 轮（09-03）币安废了止损单接口：测试网空跑一整天零成交的真相**：用户发现测试网从昨晚到现在只有两条订单。查明：币安把条件单（止损用的 STOP_MARKET）从老下单接口迁到了新的 Algo Order API，测试网已强制——旧端点一律报错拒绝。执行器是"止损先挂"设计，止损被拒就整单放弃，所以从凌晨 02:05 起 19 币 × 1h/4h 每小时 412 次下单全部失败、零挂单零成交。更严重的是同秒竞态漏出一笔没有止损的 ARB 裸仓（04:05 止损失败关闭仓位行的同一秒，巡检循环拿过期快照把入场单挂了出去，后来成交）。修复：止损单全链路改走 Algo API（下/撤/查/对账，已实测打通）+ 竞态修复（重挂入场前必须在锁内确认仓位行还活着且止损已在场，下单后再复查一次，不行就撤掉）；裸仓已市价平掉。57 项单测全过、测试网实机 smoke（下 algo 止损→查→撤）全过。**教训：交易所 API 破坏性变更不通知客户端——保护单失败必须视为全局停开仓信号（此前每小时默默重试 412 次）。**
+
+## 2026-09-03（第六十轮）币安条件单迁移 Algo API：测试网空跑零成交根因 + 裸仓竞态修复
+
+### 说人话
+
+你发现测试网从昨晚到现在只有两条订单——查清楚了，**不是策略没信号，是币安把止损单的下单接口废了**。
+
+**发生了什么事**：币安把条件单（我们止损用的 STOP_MARKET 这类）从老的下单接口迁到了一套新的"Algo Order API"。测试网已经强制执行——走老接口的止损单一律被 `-4120` 报错拒绝。执行器的设计是**先把保护性止损挂到交易所、再挂入场单**，止损被拒就整单放弃，所以从凌晨 02:05 开始，19 个币 × 1h/4h 每小时都在产生计划、412 次下单全部死在止损那一步，交易所上一个挂单都没留下。这就是你看到"只有两条订单"的原因。
+
+**顺带抓出一个真 bug**：凌晨 04:05 有一秒竞态——某个计划建仓、止损单被拒、仓位记录被关闭的同一秒，30 秒巡检循环拿着过期快照走"重挂入场"路径，在**没有止损**的情况下把 ARB 的入场限价单挂出去了。后来价格回踩成交，测试网账户上就多了一个没人管的 ARB 裸仓（89063 个 @ 0.122）。你看到的"两条订单"就是这笔留下的。这个裸仓已经按你拍板市价平掉了，账户已干净。
+
+**修了什么**：①止损单的下/撤/查/对账全部改走 Algo Order API（已拿真实测试网订单实测：下 algo 止损、查询、撤销全通）；②修竞态——重挂入场前必须在锁内重新确认仓位行还活着、且止损确实已在交易所，下单后再复查一次，发现行已关闭就立刻把刚挂的入场单撤掉。57 项单测全过。
+
+**对实盘的意义**：主网同样上了 Algo 端点（当日探针确认端点存在），这次修复对将来切实盘是必需的，不是只修测试网。
+
+### 技术记录
+
+- **根因**：Binance 条件单迁移——`POST /fapi/v1/order` 拒收 STOP_MARKET（`-4120 Order type not supported for this endpoint. Please use the Algo Order API endpoints instead.`，测试网 2026-09-03 实测）。executor.db 412 条记录全部 `place_failed`/-4120（09-03 02:05→23:06 每小时计划周期），保护单先挂设计使入场单从未出手 → 交易所零活动。
+- **修复 ①：algo 迁移**（`binance_trade.py` + `executor.py`）：
+  - binance_trade 新增 `place_algo_order`（POST /fapi/v1/algoOrder，algoType=CONDITIONAL、type=STOP_MARKET、triggerPrice、reduceOnly、workingType=CONTRACT_PRICE、clientAlgoId=coid）、`cancel_algo_order`（DELETE /fapi/v1/algoOrder，-2011 吞掉）、`get_algo_order`（GET /fapi/v1/algoOrder?clientAlgoId=，-2013→None）、`open_algo_orders`（GET /fapi/v1/openAlgoOrders）、`get_order_by_id`（按 orderId 查触发后的实际成交单）。错误码与旧端点一致（GET 未知 -2013、DELETE 未知 -2011，均实测）。
+  - executor `LiveBroker`：coid 角色字母路由（`cl<inst><pid><ROLE><seq>`，ROLE=S 走 algo，其余走旧端点）；`place/cancel/get/open_all` 全部适配。algo 状态映射：NEW→NEW；TRIGGERED/FINISHED→FILLED（成交数量取 actualQty、均价按 actualOrderId 查实际单，查不到回落 None=调用方用计划止损价记账）；CANCELED/EXPIRED/REJECTED→None（止损死了=丢了，管理循环同一套补挂自愈）。`open_all` 合并 openOrders+openAlgoOrders（对账他机检测覆盖止损单）。
+- **修复 ②：`_retry_entry` 竞态**（裸仓来源，id=64 实例）：计划 tick INSERT pending 行 → 止损失败关行的窗口内，管理循环快照把行当 pending 无 entry_coid → 直接挂了无止损入场。修复：重挂前 `_get_pos_by_id` 锁内重读（行必须 pending + 无 entry_coid + **stop_coid 已落库**=止损确已在场），下单后再重读一次，行已关闭立即撤掉刚挂的入场单。
+- **验证**：`tests/executor_test.py` 57 checks 全过（无回归）；LiveBroker 实机 smoke（ETHUSDT：algo 止损下/查 NEW/撤→None，GTX 入场下/查 NEW/撤→CANCELED，open_all 同时覆盖两种单）PASS；探针留档（algo 下撤查、未知单错误码、主网端点存在性）。
+- **裸仓处置（用户拍板市价平掉）**：ARBUSDT 多 89063.2 @ 0.122（竞态残留，executor 无记录）已市价 reduce-only 平掉，openOrders/openAlgoOrders 复核为零。
+- **主网口径**：`/fapi/v1/openAlgoOrders`、`/fapi/v1/algoOrder` 主网端点存在性探针通过（-2014 鉴权错=端点存在，非 -5000 无效路径）；主网条件单迁移公告日期未逐字核实，但止损统一走 algo 对两网均正确（algo 端点两网同在）。
+- **遗留**：后端进程属主为交互会话 Administrator，本会话（lpdefaultstring\administrator 中等权限）无权终止进程——代码修复已落盘但**运行中的旧进程仍是旧代码**，须用户重启后端后 `POST /api/executor {"enabled": true}` 恢复（修复期间已临时 enabled:false 防竞态再漏裸单）。
 
 ## 2026-09-03（第五十九轮）CVD 只用合约 takerBuy（修复 58 轮缺陷，用户拍板选项 a）
 

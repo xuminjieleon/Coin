@@ -317,8 +317,58 @@ async def exchange_info() -> dict:
 
 async def place_order(params: dict[str, Any]) -> dict:
     """POST /fapi/v1/order. Params: symbol, side, type, quantity, price,
-    stopPrice, timeInForce (GTC/GTX), reduceOnly, newClientOrderId..."""
+    timeInForce (GTC/GTX), reduceOnly, newClientOrderId...
+    NOTE: conditional types (STOP_MARKET/TAKE_PROFIT*/TRAILING_STOP) were
+    migrated off this endpoint by Binance — testnet rejects them with -4120
+    (实测 2026-09-03) and the Algo Order endpoints are live on mainnet too
+    (endpoint existence probed same day); executor stops always use
+    place_algo_order regardless of environment."""
     return await _signed("POST", "/fapi/v1/order", params)
+
+
+# ------------------------------------------- algo orders (conditional)
+
+async def place_algo_order(params: dict[str, Any]) -> dict:
+    """POST /fapi/v1/algoOrder. Params: algoType ("CONDITIONAL"), symbol,
+    side, type ("STOP_MARKET"...), quantity, triggerPrice, workingType,
+    reduceOnly, clientAlgoId..."""
+    return await _signed("POST", "/fapi/v1/algoOrder", params)
+
+
+async def cancel_algo_order(client_algo_id: str) -> dict:
+    try:
+        return await _signed("DELETE", "/fapi/v1/algoOrder",
+                             {"clientAlgoId": client_algo_id})
+    except TradeError as exc:
+        if exc.code in (-2011,):  # "Unknown order sent" = already gone
+            return {"msg": exc.msg}
+        raise
+
+
+async def get_algo_order(client_algo_id: str) -> dict | None:
+    """Algo order by client id; None when it no longer exists."""
+    try:
+        return await _signed("GET", "/fapi/v1/algoOrder",
+                             {"clientAlgoId": client_algo_id})
+    except TradeError as exc:
+        if exc.code in (-2013,):  # "Order does not exist"
+            return None
+        raise
+
+
+async def open_algo_orders() -> list:
+    return await _signed("GET", "/fapi/v1/openAlgoOrders", {})
+
+
+async def get_order_by_id(symbol: str, order_id: Any) -> dict | None:
+    """Order by exchange orderId (the actual order an algo stop spawned)."""
+    try:
+        return await _signed("GET", "/fapi/v1/order",
+                             {"symbol": symbol, "orderId": str(order_id)})
+    except TradeError as exc:
+        if exc.code in (-2013,):
+            return None
+        raise
 
 
 async def cancel_order(symbol: str, coid: str) -> dict:

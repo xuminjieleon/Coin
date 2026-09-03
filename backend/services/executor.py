@@ -428,6 +428,18 @@ class PaperBroker:
         return [dict(zip(keys, r)) for r in rows]
 
 
+_ALGO_ROLES = {"S"}  # coid roles routed to the Algo Order API (protective stops)
+
+
+def _is_algo_coid(coid: str | None) -> bool:
+    """coid scheme cl<inst><pid><ROLE><seq> — protective stops ("S") live on the
+    Algo Order API since Binance migrated conditional orders off
+    POST /fapi/v1/order (testnet rejects them with -4120, 实测 2026-09-03;
+    mainnet algo endpoints live the same day)."""
+    m = re.search(r"\d([A-Z])\d+$", coid or "")
+    return bool(m and m.group(1) in _ALGO_ROLES)
+
+
 class LiveBroker:
     """Binance USDT-M futures via services/binance_trade.py (signed)."""
 
@@ -438,6 +450,16 @@ class LiveBroker:
         self._xinfo_cache: tuple[float, dict] = (0.0, {})
 
     async def place(self, spec: dict) -> dict:
+        if spec["otype"] == "STOP_MARKET":
+            return await binance_trade.place_algo_order({
+                "algoType": "CONDITIONAL",
+                "symbol": spec["symbol"], "side": spec["side"],
+                "type": "STOP_MARKET", "quantity": _fmt_num(spec["qty"]),
+                "triggerPrice": _fmt_num(spec["stop_price"]),
+                "reduceOnly": "true",
+                "workingType": "CONTRACT_PRICE",  # last-price touch = backtest口径
+                "clientAlgoId": spec["coid"],
+            })
         params = {
             "symbol": spec["symbol"], "side": spec["side"],
             "type": spec["otype"], "quantity": _fmt_num(spec["qty"]),
@@ -448,21 +470,50 @@ class LiveBroker:
         if spec["otype"] == "LIMIT":
             params["price"] = _fmt_num(spec["price"])
             params["timeInForce"] = "GTX" if spec.get("post_only") else "GTC"
-        elif spec["otype"] == "STOP_MARKET":
-            params["stopPrice"] = _fmt_num(spec["stop_price"])
-            params["workingType"] = "CONTRACT_PRICE"  # last-price touch = backtest口径
         return await binance_trade.place_order(params)
 
     async def cancel(self, symbol: str, coid: str) -> None:
-        await binance_trade.cancel_order(symbol, coid)
+        if _is_algo_coid(coid):
+            await binance_trade.cancel_algo_order(coid)
+        else:
+            await binance_trade.cancel_order(symbol, coid)
 
     async def get(self, symbol: str, coid: str) -> dict | None:
+        if _is_algo_coid(coid):
+            return await self._get_algo(symbol, coid)
         o = await binance_trade.get_order(symbol, coid)
         if o is None:
             return None
         return {"status": o.get("status"),
                 "executedQty": float(o.get("executedQty") or 0),
                 "avgPrice": float(o["avgPrice"]) if o.get("avgPrice") not in (None, "", "0") else None}
+
+    async def _get_algo(self, symbol: str, coid: str) -> dict | None:
+        """Algo stop state mapped onto the order contract. TRIGGERED/FINISHED =
+        the stop fired and its spawned MARKET order filled; CANCELED/EXPIRED/
+        REJECTED are returned as None (= gone) so the management loop heals a
+        dead protective stop the same way it heals a vanished one."""
+        o = await binance_trade.get_algo_order(coid)
+        if o is None:
+            return None
+        st = str(o.get("algoStatus") or "")
+        if st == "NEW":
+            return {"status": "NEW", "executedQty": 0.0, "avgPrice": None}
+        if st in ("TRIGGERED", "FINISHED"):
+            qty = float(o.get("actualQty") or 0)
+            avg = None
+            aid = o.get("actualOrderId")
+            if aid not in (None, "", "0"):
+                try:
+                    od = await binance_trade.get_order_by_id(symbol, aid)
+                    if od:
+                        qty = float(od.get("executedQty") or 0) or qty
+                        if od.get("avgPrice") not in (None, "", "0"):
+                            avg = float(od["avgPrice"])
+                except Exception:  # noqa: BLE001
+                    pass
+            return {"status": "FILLED", "executedQty": qty, "avgPrice": avg}
+        return None  # CANCELED / EXPIRED / REJECTED / unknown → treat as gone
 
     async def market(self, symbol: str, side: str, qty: float, coid: str,
                      pos_id: int | None = None) -> float:
@@ -503,7 +554,16 @@ class LiveBroker:
         await binance_trade.set_margin_type(symbol, isolated=True)
 
     async def open_all(self) -> list[dict]:
-        return await binance_trade.open_orders(None)
+        orders = list(await binance_trade.open_orders(None) or [])
+        try:
+            for o in await binance_trade.open_algo_orders() or []:
+                orders.append({"clientOrderId": o.get("clientAlgoId"),
+                               "symbol": o.get("symbol"),
+                               "type": o.get("orderType"),
+                               "status": o.get("algoStatus")})
+        except Exception:  # noqa: BLE001
+            pass  # reconcile coverage is best-effort; stops still work
+        return orders
 
 
 async def _shared_filters(symbol: str, broker: PaperBroker) -> dict | None:
@@ -906,6 +966,16 @@ async def _retry_entry(pos: dict) -> None:
     whenever it can rest as maker again."""
     if _broker is None or pos["state"] != "pending" or pos.get("entry_coid"):
         return  # an entry already rests — nothing to re-place
+    # Race fix (round 60): the caller's snapshot may be stale — the plan tick
+    # can close this row between the fetch and now (e.g. stop placement failed
+    # with -4120 on 2026-09-03 and an entry was re-placed onto a closed row,
+    # leaving a NAKED filled position on the exchange). Re-read under lock and
+    # never place an entry for a row whose protective stop never rested.
+    fresh = _get_pos_by_id(pos["id"])
+    if fresh is None or fresh["state"] != "pending" or fresh.get("entry_coid") \
+            or not fresh.get("stop_coid"):
+        return
+    pos = fresh
     spec = {"symbol": pos["symbol"],
             "side": "BUY" if pos["direction"] == "long" else "SELL",
             "otype": "LIMIT", "qty": pos["qty"], "price": pos["entry"],
@@ -914,6 +984,15 @@ async def _retry_entry(pos: dict) -> None:
     try:
         await _broker.place(spec)
     except Exception:  # noqa: BLE001
+        return
+    # The row may have closed while the placement was in flight — never leave
+    # the entry resting without its row (and its stop) alive.
+    fresh2 = _get_pos_by_id(pos["id"])
+    if fresh2 is None or fresh2["state"] != "pending":
+        try:
+            await _broker.cancel(spec["symbol"], spec["coid"])
+        except Exception:  # noqa: BLE001
+            pass
         return
     _upd(pos["id"], seq=pos["seq"] + 1, entry_coid=spec["coid"], awaiting_entry=0)
     _log_event("place", f"重挂入场 {pos['symbol']} {pos['interval']} @ {_fmt_p(pos['entry'])}")
