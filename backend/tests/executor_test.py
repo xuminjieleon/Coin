@@ -854,6 +854,20 @@ async def test_be_stop_heal():
           str(after))
 
 
+async def test_unlimited_concurrency():
+    print("T21 maxConcurrent=0 不设并发上限（2026-09-05 用户拍板 testnet）")
+    reset_env(["BTCUSDT", "ETHUSDT"], ["1h"], maxConcurrent=0)
+    set_plan("BTCUSDT", "1h", entry=100.0, stop=98.0)
+    set_plan("ETHUSDT", "1h", entry=100.0, stop=98.0)
+    FEED["BTCUSDT"] = [bar(5, 104.0, 104.0, 103.0, 103.5)]
+    FEED["ETHUSDT"] = [bar(5, 104.0, 104.0, 103.0, 103.5)]
+    await executor._plan_tick()
+    a, b = one_pos("BTCUSDT|1h"), one_pos("ETHUSDT|1h")
+    check("两笔计划全部挂上（0=无上限）",
+          a is not None and b is not None and a["state"] == "pending"
+          and b["state"] == "pending", f"a={a} b={b}")
+
+
 async def main():
     # shared closed-bar analysis (round 55): ONE stub point for notifier+executor
     context.run_analysis = mock_run_analysis
@@ -881,6 +895,7 @@ async def main():
     await test_cancel_verified()
     await test_derived_leverage()
     await test_be_stop_heal()
+    await test_unlimited_concurrency()
     print(f"\nALL PASS ({PASS} checks)")
 
 

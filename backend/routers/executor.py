@@ -22,9 +22,11 @@ class ExecutorConfig(BaseModel):
     symbols: list[str] | None = Field(default=None, min_length=1, max_length=20)
     intervals: list[str] | None = Field(default=None, min_length=1, max_length=4)
     riskPct: float | None = Field(default=None, ge=0.1, le=RISK_PCT_CAP)
-    leverage: float | None = Field(default=None, ge=1, le=20)
-    maxConcurrent: float | None = Field(default=None, ge=1, le=20)
-    maxNotionalPctPer: float | None = Field(default=None, ge=5, le=500)
+    leverage: float | None = Field(default=None, ge=1, le=200)
+    # 0 = 不设并发上限（2026-09-05 用户拍板 testnet：计划流有多少挂多少，
+    # 由保证金钳制+名义额总闸兜底）
+    maxConcurrent: float | None = Field(default=None, ge=0, le=50)
+    maxNotionalPctPer: float | None = Field(default=None, ge=5, le=1500)
     maxGrossNotionalPct: float | None = Field(default=None, ge=20, le=2000)
     dailyLossLimitR: float | None = Field(default=None, ge=0, le=50)
     equityUsd: float | None = Field(default=None, ge=100, le=100_000_000)

@@ -911,8 +911,9 @@ async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
     Returns True when a pending row was created."""
     if _broker is None:
         return False
-    if len(active) >= int(_cfg.get("maxConcurrent") or 8):
-        return False  # concurrency cap (pending+open reserve a slot)
+    mc = int(_cfg.get("maxConcurrent") or 0)
+    if mc > 0 and len(active) >= mc:
+        return False  # concurrency cap (0 = unlimited; pending+open reserve a slot)
     equity = await _equity()
     if equity is None or equity <= 0:
         _set_error("实网余额获取失败，本轮跳过新开仓（不按猜测的权益定仓）")
