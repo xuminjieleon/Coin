@@ -812,6 +812,48 @@ async def test_derived_leverage():
           f"qty={pos and pos['qty']}（保证金 5000/19≈263≈1.5R）")
 
 
+async def test_be_stop_heal():
+    print("T20 保本提位失败→事件不吞+30s 自愈（2026-09-05 SUI -2021 事故）")
+    reset_env(["BTCUSDT"], ["1h"])
+    set_plan("BTCUSDT", "1h", entry=100.0, stop=98.0)
+    FEED["BTCUSDT"] = [bar(5, 104.0, 104.0, 103.0, 103.5)]
+    await executor._plan_tick()
+    FEED["BTCUSDT"].append(bar(3, 102.8, 103.0, 99.8, 100.2))  # 回踩成交入场
+    await executor._mgmt_tick()
+    pos = one_pos("BTCUSDT|1h")
+    check("入场成交 open", pos["state"] == "open", str(pos))
+
+    orig_rs = executor._replace_stop
+
+    async def boom(pos, qty, price=None):
+        raise binance_trade.TradeError(-2021, "Order would immediately trigger")
+
+    executor._replace_stop = boom
+    FEED["BTCUSDT"].append(bar(2, 100.2, 100.6, 100.0, 100.5))  # 触发保本 100.3
+    await executor._mgmt_tick()
+    fresh = one_pos("BTCUSDT|1h")
+    check("保本记账未丢", fresh["be_done"] and abs(fresh["be_qty"] - 25.0) < 1e-9,
+          str(fresh))
+    check("止损保持原位待自愈", abs(fresh["stop"] - 98.0) < 1e-9, str(fresh["stop"]))
+    check("保本事件未被吞", any("保本" in t for t in _events_text()),
+          str(_events_text()))
+
+    executor._replace_stop = orig_rs
+    await executor._mgmt_tick()
+    healed = one_pos("BTCUSDT|1h")
+    check("自愈后止损提至入场", abs(healed["stop"] - 100.0) < 1e-9, str(healed["stop"]))
+    check("补挂事件已记", any("保本止损补挂" in t for t in _events_text()))
+
+    # 跟踪收紧后的止损（优于入场位）不得误触发自愈
+    seq0 = healed["seq"]
+    executor._upd(healed["id"], stop=101.0)
+    FEED["BTCUSDT"].append(bar(1, 100.9, 100.95, 100.8, 100.9))  # 不触止损/目标
+    await executor._mgmt_tick()
+    after = one_pos("BTCUSDT|1h")
+    check("优于入场位不误触发", abs(after["stop"] - 101.0) < 1e-9 and after["seq"] == seq0,
+          str(after))
+
+
 async def main():
     # shared closed-bar analysis (round 55): ONE stub point for notifier+executor
     context.run_analysis = mock_run_analysis
@@ -838,6 +880,7 @@ async def main():
     await test_orphan_sweep()
     await test_cancel_verified()
     await test_derived_leverage()
+    await test_be_stop_heal()
     print(f"\nALL PASS ({PASS} checks)")
 
 

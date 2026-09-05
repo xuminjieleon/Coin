@@ -1267,7 +1267,16 @@ async def _on_be_filled(pos: dict, fill_price: float) -> None:
     _upd(pos["id"], be_done=1, be_qty=be_qty, be_fill_at=_now_ms(),
          mfe=pos["entry"])
     if runner > 0:
-        await _replace_stop(pos, runner, price=pos["entry"])
+        try:
+            await _replace_stop(pos, runner, price=pos["entry"])
+        except Exception as exc:  # noqa: BLE001
+            # -2021 class (SUI 2026-09-05): price wicked to the be level then
+            # snapped back through entry, so the breakeven stop "would
+            # immediately trigger" and the placement was rejected. The OLD
+            # stop (full qty, original level) keeps protecting the runner;
+            # _sync_one's breakeven heal retries every 30s until it lands.
+            # Never swallow the be event/push on this failure.
+            _warn(f"{pos['symbol']} 保本后止损提位失败（保留原止损，巡检自愈重试）: {exc}")
     _log_event("be", f"保本 {pos['symbol']} {pos['interval']} 半仓@{_fmt_p(fill_price)}，"
                f"止损移至入场 {_fmt_p(pos['entry'])}，剩余 {runner}")
     await _push("保本", f"【保本】{pos['symbol']} {pos['interval']} 半仓止盈 @ {_fmt_p(fill_price)}\n"
@@ -1444,6 +1453,28 @@ async def _sync_one(pos: dict) -> None:
         _warn(f"{pos['symbol']} 止损单缺失，立即补挂 @ {_fmt_p(pos['stop'])}")
         await _replace_stop(pos, runner)
         pos = _get_pos_by_id(pos["id"]) or pos
+
+    if (pos["be_done"] and stop_info is not None
+            and stop_info.get("status") == "NEW"):
+        # Breakeven heal (SUI 2026-09-05): the be→stop-to-entry replacement
+        # can fail with -2021 (wick through the be level, price snapped back
+        # beyond entry) and nothing else retries it — be_done=1 would strand
+        # the runner on the ORIGINAL stop forever. After be, the stop must
+        # never sit on the pre-be (worse-than-entry) side; retry each tick.
+        filters = await _safe_filters(pos["symbol"])
+        tick = filters["tick"] if filters else 0.0
+        long = pos["direction"] == "long"
+        entry = float(pos["entry"])
+        stop_px = float(pos["stop"])
+        worse = stop_px < entry - tick * 0.5 if long else stop_px > entry + tick * 0.5
+        r_qty = _runner_qty(pos)
+        if worse and r_qty > 0:
+            try:
+                await _replace_stop(pos, r_qty, price=entry)
+                _log_event("warn", f"{pos['symbol']} 保本止损补挂至入场 {_fmt_p(entry)}"
+                            f"（此前提位失败一直未落地）")
+            except Exception as exc:  # noqa: BLE001
+                _warn(f"{pos['symbol']} 保本止损提位仍失败（继续重试）: {exc}")
 
     if not pos["be_done"] and pos.get("be_coid"):
         be_info, b_ok = await _probe(pos["symbol"], pos["be_coid"])
