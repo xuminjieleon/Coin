@@ -454,6 +454,12 @@ class PaperBroker:
                 "origQty", "pos_id", "status")
         return [dict(zip(keys, r)) for r in rows]
 
+    async def available(self) -> float | None:
+        return None  # sim locks no margin — sizing must not clamp in paper
+
+    async def positions_all(self) -> list[dict]:
+        return []
+
 
 _ALGO_ROLES = {"S"}  # coid roles routed to the Algo Order API (protective stops)
 
@@ -591,6 +597,21 @@ class LiveBroker:
         except Exception:  # noqa: BLE001
             pass  # reconcile coverage is best-effort; stops still work
         return orders
+
+    async def available(self) -> float | None:
+        """Free USDT margin (wallet minus open-order/position initial margin).
+        -2019 storm root cause (2026-09-04): sizing never looked at this."""
+        try:
+            return await binance_trade.usdt_available()
+        except Exception:  # noqa: BLE001
+            return None
+
+    async def positions_all(self) -> list[dict]:
+        try:
+            rows = await binance_trade.position_risk(None)
+        except Exception:  # noqa: BLE001
+            return []
+        return [r for r in rows or [] if abs(float(r.get("positionAmt") or 0)) > 1e-9]
 
 
 async def _shared_filters(symbol: str, broker: PaperBroker) -> dict | None:
@@ -854,6 +875,20 @@ async def _market_probed(symbol: str, side: str, qty: float, coid: str,
         raise
 
 
+async def _probe(symbol: str, coid: str) -> tuple[dict | None, bool]:
+    """Order/algo state probe with a hard distinction (2026-09-05 BTC/XRP
+    incident): ok=False means the PROBE ITSELF failed — no conclusion may be
+    drawn about the order's existence. A flaky probe once cleared a resting
+    entry coid, the plan cycle then cancelled only the stop, and the orphan
+    entry later filled as an unmanaged naked position. ok=True + info=None
+    is the only path that confirms the order is really gone (-2013)."""
+    try:
+        return await _broker.get(symbol, coid), True
+    except Exception as exc:  # noqa: BLE001
+        _warn(f"{symbol} 挂单探针失败（本轮不据此改动）: {exc}")
+        return None, False
+
+
 async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
     """Guard chain + protective stop first + post-only entry.
     Returns True when a pending row was created."""
@@ -908,6 +943,29 @@ async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
     if (gross + notional) > equity * float(_cfg.get("maxGrossNotionalPct") or 250) / 100.0:
         _warn("总名义额超上限，跳过新开仓")
         return False
+    if _mode != "paper":
+        # -2019 guard (2026-09-05): clamp the order to what the free margin
+        # can actually fund — 15% risk × ~2% stops demands notional far above
+        # wallet×leverage, and Binance rejects every entry with "Margin is
+        # insufficient" once earlier orders/positions lock the wallet.
+        avail = None
+        try:
+            avail = await _broker.available()
+        except Exception:  # noqa: BLE001
+            avail = None
+        if avail is not None:
+            lev = max(int(_cfg.get("leverage") or 5), 1)
+            cap_notional = avail * lev * 0.95
+            if notional > cap_notional:
+                q2 = _floor_step(cap_notional / entry, filters["step"])
+                if q2 * entry < filters["minNotional"]:
+                    _warn(f"{sym} 可用保证金 {_fmt_num(avail)} 撑不起最小名义额 "
+                          f"{filters['minNotional']:.0f}，跳过（下轮重试）")
+                    return False
+                _warn(f"{sym} 保证金钳制 qty {_fmt_num(qty)} → {_fmt_num(q2)}"
+                      f"（可用 {_fmt_num(avail)} × {lev}x 杠杆）")
+                qty = q2
+                notional = qty * entry
 
     if _mode != "paper":
         try:
@@ -956,14 +1014,17 @@ async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
         if exc.code in (-5022, -2010, -2011):  # post-only would cross
             awaiting = 1  # keep stop; retry entry while plan valid
         else:
-            await _cancel_quietly(sym, s_coid, e_coid)
+            # entry rejected (-2019 margin etc.) — the just-rested stop MUST
+            # be verified gone: a silently failed cancel left an orphan FIL
+            # stop (2026-09-05) that then blocked margin-mode setup (-4067)
+            await _cancel_verified(sym, s_coid, e_coid)
             _upd(pid, state="closed", exit_reason="place_failed", notes=str(exc))
             _set_error(f"{sym} 入场单失败: {exc}")
             return False
     except Exception as exc:  # noqa: BLE001
         # _place_probed already verified the order does NOT rest — cancel
         # the stop (and the entry defensively) and close the row
-        await _cancel_quietly(sym, s_coid, e_coid)
+        await _cancel_verified(sym, s_coid, e_coid)
         _upd(pid, state="closed", exit_reason="place_failed", notes=str(exc))
         _set_error(f"{sym} 入场单失败: {exc}")
         return False
@@ -989,6 +1050,28 @@ async def _cancel_quietly(symbol: str, *coids: str) -> None:
             await _broker.cancel(symbol, coid)
         except Exception:  # noqa: BLE001
             pass
+
+
+async def _cancel_verified(symbol: str, *coids: str) -> None:
+    """Cancel + CONFIRM gone, twice. Protective-order cancels must not fail
+    silently (FIL 09-05: an orphaned stop then blocked -4067 setup checks).
+    A coid that still rests after two tries is logged loudly — the 30s
+    orphan sweep will retry it every round until clean."""
+    if _broker is None:
+        return
+    for coid in coids:
+        if not coid:
+            continue
+        for _ in range(2):
+            try:
+                await _broker.cancel(symbol, coid)
+            except Exception:  # noqa: BLE001
+                pass
+            info, ok = await _probe(symbol, coid)
+            if not ok or info is None:
+                break  # gone (or unverifiable this round — sweep will retry)
+        else:
+            _log_event("warn", f"{symbol} 撤单后 {coid} 仍存在，孤儿清扫将持续处理")
 
 
 async def _retry_entry(pos: dict) -> None:
@@ -1036,10 +1119,13 @@ async def _cancel_pending(pos: dict, reason: str, adopt_fill: bool = True) -> No
     filled = 0.0
     avg = None
     if pos.get("entry_coid"):
-        try:
-            info = await _broker.get(pos["symbol"], pos["entry_coid"])
-        except Exception:  # noqa: BLE001
-            info = None
+        info, ok = await _probe(pos["symbol"], pos["entry_coid"])
+        if not ok:
+            # probe failed while the entry may have FILLED — cancelling the
+            # stop now would strand a naked position. Keep the row as is and
+            # let the next tick retry with fresh probe data.
+            _set_error(f"{pos['symbol']} 撤单前入场探针失败，本轮保留不动")
+            return
         if info:
             filled = float(info.get("executedQty") or 0)
             avg = info.get("avgPrice")
@@ -1286,12 +1372,11 @@ async def _sync_one(pos: dict) -> None:
             await _retry_entry(pos)
             pos = _get_pos_by_id(pos["id"]) or pos
         if pos.get("entry_coid"):
-            try:
-                info = await _broker.get(pos["symbol"], pos["entry_coid"])
-            except Exception:  # noqa: BLE001
-                info = None
+            info, ok = await _probe(pos["symbol"], pos["entry_coid"])
+            if not ok:
+                return  # probe failure ≠ order gone — keep tracking (BTC lesson)
             if info is None:
-                # order vanished without our cancel: re-arm the placement
+                # exchange CONFIRMED the order vanished without our cancel
                 _warn(f"{pos['symbol']} 入场单查询不到，转为待重挂")
                 _upd(pos["id"], awaiting_entry=1, entry_coid=None)
                 return
@@ -1307,10 +1392,11 @@ async def _sync_one(pos: dict) -> None:
     runner = _runner_qty(pos)
     stop_info = None
     if pos.get("stop_coid"):
-        try:
-            stop_info = await _broker.get(pos["symbol"], pos["stop_coid"])
-        except Exception:  # noqa: BLE001
-            stop_info = None
+        stop_info, s_ok = await _probe(pos["symbol"], pos["stop_coid"])
+        if not s_ok:
+            return  # probe failure ≠ stop missing — a false "missing" would
+            # double-place stops or even close a healthy position as
+            # manual_extern (position probe failing in the same network blip)
     if stop_info is not None and stop_info.get("status") == "FILLED":
         exit_px = stop_info.get("avgPrice") or pos["stop"]
         reason = "be_stop" if pos["be_done"] else "stop"
@@ -1339,35 +1425,30 @@ async def _sync_one(pos: dict) -> None:
         pos = _get_pos_by_id(pos["id"]) or pos
 
     if not pos["be_done"] and pos.get("be_coid"):
-        try:
-            be_info = await _broker.get(pos["symbol"], pos["be_coid"])
-        except Exception:  # noqa: BLE001
-            be_info = None
-        if be_info is not None and be_info.get("status") == "FILLED":
-            await _on_be_filled(pos, be_info.get("avgPrice") or pos["plan"]["beTrigger"])
-            pos = _get_pos_by_id(pos["id"]) or pos
-        elif be_info is None:
-            filters = await _safe_filters(pos["symbol"])
-            be_qty = _floor_step(pos["filled"] / 2, filters["step"] if filters else 0)
-            if be_qty > 0:
-                _warn(f"{pos['symbol']} 保本单缺失，补挂")
-                await _broker.place({"symbol": pos["symbol"],
-                                     "side": "SELL" if pos["direction"] == "long" else "BUY",
-                                     "otype": "LIMIT", "qty": be_qty,
-                                     "price": _round_tick(pos["plan"]["beTrigger"],
-                                                          filters["tick"] if filters else 0),
-                                     "reduce_only": True,
-                                     "coid": _coid(pos["id"], "B", pos["seq"] + 1),
-                                     "pos_id": pos["id"]})
-                _upd(pos["id"], seq=pos["seq"] + 1,
-                     be_coid=_coid(pos["id"], "B", pos["seq"] + 1))
+        be_info, b_ok = await _probe(pos["symbol"], pos["be_coid"])
+        if b_ok:
+            if be_info is not None and be_info.get("status") == "FILLED":
+                await _on_be_filled(pos, be_info.get("avgPrice") or pos["plan"]["beTrigger"])
+                pos = _get_pos_by_id(pos["id"]) or pos
+            elif be_info is None:
+                filters = await _safe_filters(pos["symbol"])
+                be_qty = _floor_step(pos["filled"] / 2, filters["step"] if filters else 0)
+                if be_qty > 0:
+                    _warn(f"{pos['symbol']} 保本单缺失，补挂")
+                    await _broker.place({"symbol": pos["symbol"],
+                                         "side": "SELL" if pos["direction"] == "long" else "BUY",
+                                         "otype": "LIMIT", "qty": be_qty,
+                                         "price": _round_tick(pos["plan"]["beTrigger"],
+                                                              filters["tick"] if filters else 0),
+                                         "reduce_only": True,
+                                         "coid": _coid(pos["id"], "B", pos["seq"] + 1),
+                                         "pos_id": pos["id"]})
+                    _upd(pos["id"], seq=pos["seq"] + 1,
+                         be_coid=_coid(pos["id"], "B", pos["seq"] + 1))
 
     if pos.get("tgt_coid"):
-        try:
-            tgt_info = await _broker.get(pos["symbol"], pos["tgt_coid"])
-        except Exception:  # noqa: BLE001
-            tgt_info = None
-        if tgt_info is not None and tgt_info.get("status") == "FILLED":
+        tgt_info, t_ok = await _probe(pos["symbol"], pos["tgt_coid"])
+        if t_ok and tgt_info is not None and tgt_info.get("status") == "FILLED":
             await _close_position(pos, tgt_info.get("avgPrice") or pos["plan"]["target1"],
                                   "target")
             return
@@ -1430,10 +1511,54 @@ async def _sync_one_guarded(pos: dict) -> None:
         _set_error(f"管理 {pos['key']} 出错: {exc}")
 
 
+async def _sweep_orphans() -> None:
+    """30s defense-in-depth (2026-09-05 incident): every cl{instance}* order
+    on the exchange must map to a live pending/open row; orders whose pid row
+    is closed (or missing) are leftovers of interrupted flows — cancel them
+    loudly. In-flight placements always commit their row BEFORE the order
+    rests, so a live row's pid is skipped regardless of seq races. Unmanaged
+    net positions (no active row on that symbol) are WARNED about, never
+    auto-closed — they may be manual trades."""
+    if _broker is None or _mode == "paper":
+        return
+    try:
+        ours = await _broker.open_all()
+    except Exception:  # noqa: BLE001
+        return
+    prefix = f"cl{_cfg['instance']}"
+    for o in ours or []:
+        cid = str(o.get("clientOrderId") or "")
+        if not cid.startswith(prefix):
+            continue  # other machines / manual orders: never touched
+        m = re.match(r"^(\d+)", cid[len(prefix):])
+        if not m:
+            continue
+        row = _get_pos_by_id(int(m.group(1)))
+        if row is not None and row["state"] in ("pending", "open"):
+            continue
+        try:
+            await _broker.cancel(o.get("symbol"), cid)
+            _log_event("warn", f"清理孤儿挂单 {o.get('symbol')} {cid}（无活跃行）")
+        except Exception as exc:  # noqa: BLE001
+            _log_event("warn", f"孤儿挂单 {cid} 撤单失败: {exc}")
+    try:
+        live = await _broker.positions_all()
+    except Exception:  # noqa: BLE001
+        live = []
+    if live:
+        active_syms = {p["symbol"] for p in _active_positions()}
+        for p in live:
+            sym = p.get("symbol")
+            if sym not in active_syms:
+                _warn(f"存在非执行器管理的仓位 {sym} "
+                      f"qty={float(p.get('positionAmt') or 0):g}（请人工核对，不自动处理）")
+
+
 async def _mgmt_tick() -> None:
-    """~30s: reconciliation, fills, self-healing stops, trail ratchet, time
-    exits. Positions sync CONCURRENTLY (W8 fix): a slow exchange round-trip
-    for one position must not delay the missing-stop self-heal of the next."""
+    """~30s: reconciliation, orphan sweep, fills, self-healing stops, trail
+    ratchet, time exits. Positions sync CONCURRENTLY (W8 fix): a slow
+    exchange round-trip for one position must not delay the missing-stop
+    self-heal of the next."""
     _ensure_broker()
     if _broker is None:
         return
@@ -1442,6 +1567,7 @@ async def _mgmt_tick() -> None:
     if _mode != "paper" and not _reconciled:
         if not await _reconcile():
             return  # hold off until exchange state is verified once
+    await _sweep_orphans()
     rows = _active_positions()
     if not rows:
         return

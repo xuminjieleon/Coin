@@ -415,6 +415,16 @@ async def usdt_equity() -> float | None:
     return None
 
 
+async def usdt_available() -> float | None:
+    """Available USDT margin: wallet minus position + open-order initial
+    margin. The executor clamps order size against this (-2019 guard)."""
+    data = await _signed("GET", "/fapi/v2/balance", {})
+    for item in data or []:
+        if item.get("asset") == "USDT":
+            return float(item.get("availableBalance") or 0.0)
+    return None
+
+
 def route_status() -> dict:
     """Live cooldown state per route (for /api/executor diagnostics)."""
     now = time.monotonic()

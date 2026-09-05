@@ -567,6 +567,188 @@ async def test_place_failed_circuit_breaker():
           and pos["state"] == "pending", str(pos))
 
 
+def _insert_row(key, symbol, state, **extra):
+    """Direct row insert for sweep/probe tests (schema-required fields only)."""
+    vals = {"key": key, "symbol": symbol, "interval": "1h", "direction": "long",
+            "plan_json": json.dumps({"entry": 100.0, "stop": 98.0}), "entry": 100.0,
+            "stop": 98.0, "qty": 1.0, "state": state, "created_at": executor._now_ms()}
+    vals.update(extra)
+    cur = executor._db().execute(
+        "INSERT INTO positions (key, symbol, interval, direction, plan_json, "
+        "entry, stop, qty, state, created_at, exit_reason, entry_coid, stop_coid) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (vals["key"], vals["symbol"], vals["interval"], vals["direction"],
+         vals["plan_json"], vals["entry"], vals["stop"], vals["qty"], vals["state"],
+         vals["created_at"], vals.get("exit_reason"), vals.get("entry_coid"),
+         vals.get("stop_coid")))
+    executor._db().commit()
+    return int(cur.lastrowid)
+
+
+def _events_text():
+    return [r[0] for r in executor._db().execute("SELECT text FROM events")]
+
+
+async def test_probe_failure_keeps_tracking():
+    print("T15 探针失败不清 coid（2026-09-04 BTC 孤儿成交裸仓事故）")
+    reset_env(["BTCUSDT"], ["1h"])
+    set_plan("BTCUSDT", "1h", entry=100.0, stop=98.0)
+    FEED["BTCUSDT"] = [bar(5, 104.0, 104.0, 103.0, 103.5)]
+    await executor._plan_tick()
+    pos = one_pos("BTCUSDT|1h")
+    check("挂单就绪", pos is not None and pos["state"] == "pending"
+          and pos.get("entry_coid"), str(pos))
+
+    orig_get = executor._broker.get
+
+    async def flaky_get(symbol, coid):
+        raise RuntimeError("network blip")
+
+    executor._broker.get = flaky_get
+    await executor._sync_one(one_pos("BTCUSDT|1h"))
+    fresh = one_pos("BTCUSDT|1h")
+    check("探针失败后 entry_coid 保留", fresh is not None and fresh["state"] == "pending"
+          and bool(fresh["entry_coid"]) and not fresh["awaiting_entry"], str(fresh))
+    check("未误报查询不到", not any("查询不到" in t for t in _events_text()),
+          str(_events_text()))
+
+    executor._broker.get = orig_get
+    info = await executor._broker.get("BTCUSDT", one_pos("BTCUSDT|1h")["entry_coid"])
+    check("探针恢复后仍能读到挂单", info is not None and info.get("status") == "NEW",
+          str(info))
+
+
+async def test_margin_clamp():
+    print("T16 保证金钳制（-2019 Margin is insufficient 风暴，2026-09-05）")
+
+    class _StubLive:
+        def __init__(self):
+            self.specs = []
+
+        async def equity(self):
+            return 10000.0
+
+        async def available(self):
+            return 1000.0
+
+        async def filters(self, symbol):
+            return {"step": 0.001, "tick": 0.1, "minNotional": 5.0}
+
+        async def ensure_setup(self, symbol):
+            pass
+
+        async def place(self, spec):
+            self.specs.append(dict(spec))
+            return {"status": "NEW"}
+
+        async def get(self, symbol, coid):
+            return None
+
+        async def cancel(self, symbol, coid):
+            pass
+
+        async def open_all(self):
+            return []
+
+        async def positions_all(self):
+            return []
+
+    reset_env(["BTCUSDT"], ["1h"])
+    executor._mode = "testnet"
+    executor._broker = _StubLive()
+    executor._equity_cache = (0.0, 0.0)
+    plan = {"direction": "long", "entry": 100.0, "stop": 98.0, "beTrigger": 100.3,
+            "target1": 101.0, "beR": 0.15, "targetR": 0.5, "trailR": None,
+            "texitBars": 96, "fillBars": 24}
+    ok = await executor._try_place("BTCUSDT", "1h", plan, {})
+    pos = one_pos("BTCUSDT|1h")
+    # risk 10000×1%=100 → qty 50 → notional 5000；可用 1000×5×0.95=4750 → 47.5
+    check("钳制下单成功", ok and pos is not None and pos["state"] == "pending"
+          and abs(pos["qty"] - 47.5) < 1e-9, f"qty={pos and pos['qty']}")
+    check("止损与入场同量", executor._broker.specs[0]["qty"] == pos["qty"]
+          and executor._broker.specs[1]["qty"] == pos["qty"],
+          str(executor._broker.specs))
+
+    async def tiny():
+        return 0.5  # 撑不起 minNotional=5
+
+    executor._broker.available = tiny
+    ok2 = await executor._try_place("ETHUSDT", "1h", plan, {})
+    check("保证金不足时干净跳过", ok2 is False and one_pos("ETHUSDT|1h") is None
+          and any("撑不起" in w for w in executor._warned), str(executor._warned))
+
+
+async def test_orphan_sweep():
+    print("T17 孤儿挂单清扫 + 无主仓位告警（2026-09-05 FIL 残留止损教训）")
+    reset_env(["BTCUSDT", "ETHUSDT"], ["1h"])
+    executor._mode = "testnet"
+    pid_closed = _insert_row("BTCUSDT|1h", "BTCUSDT", "closed",
+                            exit_reason="place_failed",
+                            stop_coid="cltest1S0")
+    pid_live = _insert_row("ETHUSDT|1h", "ETHUSDT", "pending",
+                           entry_coid="cltest2E0", stop_coid="cltest2S0")
+    cancelled = []
+
+    class _SweepStub:
+        async def open_all(self):
+            return [
+                {"clientOrderId": "cltest1S0", "symbol": "BTCUSDT"},
+                {"clientOrderId": "cltest2E0", "symbol": "ETHUSDT"},
+                {"clientOrderId": "clxxxx999E0", "symbol": "BTCUSDT"},  # 他机
+            ]
+
+        async def cancel(self, symbol, coid):
+            cancelled.append((symbol, coid))
+
+        async def positions_all(self):
+            return [{"symbol": "SOLUSDT", "positionAmt": 1.5}]
+
+    executor._broker = _SweepStub()
+    await executor._sweep_orphans()
+    check("只清 closed 行的孤儿单", cancelled == [("BTCUSDT", "cltest1S0")],
+          str(cancelled))
+    check("孤儿清理已记事件", any("清理孤儿挂单" in t for t in _events_text()),
+          str(_events_text()))
+    check("无主仓位已告警", any("非执行器管理的仓位" in w for w in executor._warned),
+          str(executor._warned))
+
+
+async def test_cancel_verified():
+    print("T18 撤单必须验证（FIL 止损撤不掉残留 -4067 事故）")
+
+    class _SurvivorStub:
+        async def cancel(self, symbol, coid):
+            raise RuntimeError("cancel glitch")
+
+        async def get(self, symbol, coid):
+            return {"status": "NEW"}
+
+    reset_env(["BTCUSDT"], ["1h"])
+    executor._broker = _SurvivorStub()
+    await executor._cancel_verified("BTCUSDT", "cltest5S0")
+    check("撤不掉时大声报警", any("仍存在" in t for t in _events_text()),
+          str(_events_text()))
+
+    class _GoneStub:
+        def __init__(self):
+            self.n = 0
+
+        async def cancel(self, symbol, coid):
+            self.n += 1
+
+        async def get(self, symbol, coid):
+            return None
+
+    stub = _GoneStub()
+    executor._broker = stub
+    executor._warned.clear()
+    executor._db().execute("DELETE FROM events")
+    executor._db().commit()
+    await executor._cancel_verified("BTCUSDT", "cltest6S0")
+    check("确认消失后安静返回", stub.n == 1
+          and not any("仍存在" in t for t in _events_text()), f"n={stub.n}")
+
+
 async def main():
     # shared closed-bar analysis (round 55): ONE stub point for notifier+executor
     context.run_analysis = mock_run_analysis
@@ -588,6 +770,10 @@ async def main():
     await test_live_equity_refusal()
     await test_replay_trail_parity()
     await test_place_failed_circuit_breaker()
+    await test_probe_failure_keeps_tracking()
+    await test_margin_clamp()
+    await test_orphan_sweep()
+    await test_cancel_verified()
     print(f"\nALL PASS ({PASS} checks)")
 
 
