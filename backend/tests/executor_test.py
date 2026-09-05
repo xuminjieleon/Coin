@@ -624,6 +624,7 @@ async def test_margin_clamp():
     class _StubLive:
         def __init__(self):
             self.specs = []
+            self.setups = []
 
         async def equity(self):
             return 10000.0
@@ -634,8 +635,8 @@ async def test_margin_clamp():
         async def filters(self, symbol):
             return {"step": 0.001, "tick": 0.1, "minNotional": 5.0}
 
-        async def ensure_setup(self, symbol):
-            pass
+        async def ensure_setup(self, symbol, lev=None):
+            self.setups.append((symbol, lev))
 
         async def place(self, spec):
             self.specs.append(dict(spec))
@@ -749,6 +750,68 @@ async def test_cancel_verified():
           and not any("仍存在" in t for t in _events_text()), f"n={stub.n}")
 
 
+async def test_derived_leverage():
+    print("T19 按止损距离推导每仓杠杆（清算价钉在 ≥2×止损距离外，2026-09-05）")
+
+    class _LevStub:
+        def __init__(self):
+            self.setups = []
+
+        async def equity(self):
+            return 10000.0
+
+        async def available(self):
+            return 100000.0  # 不构成钳制，只看杠杆推导
+
+        async def filters(self, symbol):
+            return {"step": 0.001, "tick": 0.1, "minNotional": 5.0}
+
+        async def ensure_setup(self, symbol, lev=None):
+            self.setups.append((symbol, lev))
+
+        async def place(self, spec):
+            return {"status": "NEW"}
+
+        async def get(self, symbol, coid):
+            return None
+
+        async def cancel(self, symbol, coid):
+            pass
+
+        async def open_all(self):
+            return []
+
+        async def positions_all(self):
+            return []
+
+    # pure derivation math
+    lev_tight = executor._derived_leverage(0.02, 100)
+    lev_wide = executor._derived_leverage(0.05, 100)
+    check("紧止损 2% → 19x", lev_tight == 19, f"lev={lev_tight}")
+    check("宽止损 5%（ZEC 型）→ 8x", lev_wide == 8, f"lev={lev_wide}")
+    for pct, lev in ((0.02, lev_tight), (0.05, lev_wide)):
+        liq_dist = 1.0 / lev - executor._LEV_MMR_PAD
+        check(f"清算距离 {liq_dist:.3f} ≥ 2×止损 {pct}", liq_dist >= 2 * pct - 1e-9,
+              f"lev={lev}")
+    check("配置上限生效", executor._derived_leverage(0.02, 10) == 10
+          and executor._derived_leverage(0.05, 5) == 5)
+
+    # end-to-end: ensure_setup receives the derived value, not the cfg cap
+    reset_env(["BTCUSDT"], ["1h"], leverage=100)
+    executor._mode = "testnet"
+    executor._broker = _LevStub()
+    executor._equity_cache = (0.0, 0.0)
+    plan = {"direction": "long", "entry": 100.0, "stop": 98.0, "beTrigger": 100.3,
+            "target1": 101.0, "beR": 0.15, "targetR": 0.5, "trailR": None,
+            "texitBars": 96, "fillBars": 24}
+    await executor._try_place("BTCUSDT", "1h", plan, {})
+    check("下单按推导杠杆 19x 设置", executor._broker.setups == [("BTCUSDT", 19)],
+          str(executor._broker.setups))
+    pos = one_pos("BTCUSDT|1h")
+    check("全额定仓未被保证金钳制", pos is not None and abs(pos["qty"] - 50.0) < 1e-9,
+          f"qty={pos and pos['qty']}（保证金 5000/19≈263≈1.5R）")
+
+
 async def main():
     # shared closed-bar analysis (round 55): ONE stub point for notifier+executor
     context.run_analysis = mock_run_analysis
@@ -774,6 +837,7 @@ async def main():
     await test_margin_clamp()
     await test_orphan_sweep()
     await test_cancel_verified()
+    await test_derived_leverage()
     print(f"\nALL PASS ({PASS} checks)")
 
 

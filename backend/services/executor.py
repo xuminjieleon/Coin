@@ -441,7 +441,7 @@ class PaperBroker:
             self._xinfo_cache = (time.time(), info)
         return self._xinfo_cache[1]
 
-    async def ensure_setup(self, symbol: str) -> None:
+    async def ensure_setup(self, symbol: str, lev: int | None = None) -> None:
         pass
 
     async def open_all(self) -> list[dict]:
@@ -578,8 +578,8 @@ class LiveBroker:
             self._xinfo_cache = (time.time(), info)
         return _filters_from_info(self._xinfo_cache[1], symbol)
 
-    async def ensure_setup(self, symbol: str) -> None:
-        lev = int(_cfg.get("leverage") or 5)
+    async def ensure_setup(self, symbol: str, lev: int | None = None) -> None:
+        lev = int(_cfg.get("leverage") or 5) if lev is None else int(lev)
         try:
             await binance_trade.set_leverage(symbol, lev)
         except binance_trade.TradeError as exc:
@@ -889,6 +889,23 @@ async def _probe(symbol: str, coid: str) -> tuple[dict | None, bool]:
         return None, False
 
 
+_LEV_SAFETY = 2.0      # liquidation must sit >= 2x the stop distance beyond entry
+_LEV_MMR_PAD = 0.012   # conservative maintenance-margin + liquidation-fee buffer
+
+
+def _derived_leverage(stop_pct: float, cap: int) -> int:
+    """Per-position leverage so ISOLATED liquidation never overtakes the plan
+    stop: liq distance = 1/lev − MMR, so lev = 1/(SAFETY×stop + MMR_PAD)
+    keeps liq at least SAFETY×stop beyond entry for any real MMR ≤ PAD.
+    A flat 75~100x would put liq INSIDE the 1h stop distances (~1.3-1.9%)
+    and let the exchange liquidation engine become the real stop on noise
+    wicks — un-backtested exits, insurance-fund forfeiture (2026-09-05)."""
+    if stop_pct <= 0:
+        return max(1, min(cap, 5))
+    lev = int(1.0 / (_LEV_SAFETY * stop_pct + _LEV_MMR_PAD))
+    return max(1, min(cap, lev))
+
+
 async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
     """Guard chain + protective stop first + post-only entry.
     Returns True when a pending row was created."""
@@ -928,6 +945,9 @@ async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
                               filters["tick"]):
         _warn(f"{sym} {itv} 相同挂单本 bar 已失败过，熔断至下一 bar")
         return False
+    # per-position leverage: cap from cfg, derived so liq >= 2x stop distance
+    stop_pct = abs(entry - stop) / entry
+    lev_eff = _derived_leverage(stop_pct, max(int(_cfg.get("leverage") or 5), 1))
     qty = min(qty, _floor_step(
         equity * float(_cfg.get("maxNotionalPctPer") or 30) / 100.0 / entry,
         filters["step"]))
@@ -945,16 +965,17 @@ async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
         return False
     if _mode != "paper":
         # -2019 guard (2026-09-05): clamp the order to what the free margin
-        # can actually fund — 15% risk × ~2% stops demands notional far above
+        # can actually fund — risk×stop-distance demands notional far above
         # wallet×leverage, and Binance rejects every entry with "Margin is
         # insufficient" once earlier orders/positions lock the wallet.
+        # Leverage here is the DERIVED per-position value (liq >= 2x stop).
         avail = None
         try:
             avail = await _broker.available()
         except Exception:  # noqa: BLE001
             avail = None
         if avail is not None:
-            lev = max(int(_cfg.get("leverage") or 5), 1)
+            lev = lev_eff
             cap_notional = avail * lev * 0.95
             if notional > cap_notional:
                 q2 = _floor_step(cap_notional / entry, filters["step"])
@@ -969,7 +990,7 @@ async def _try_place(sym: str, itv: str, plan: dict, active: dict) -> bool:
 
     if _mode != "paper":
         try:
-            await _broker.ensure_setup(sym)
+            await _broker.ensure_setup(sym, lev_eff)
         except Exception as exc:  # noqa: BLE001
             _warn(f"{sym} 杠杆/保证金模式设置失败: {exc}")
             return False
